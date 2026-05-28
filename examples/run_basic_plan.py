@@ -5,6 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from deep_agents.config import DeepAgentsSettings
 from deep_agents.langchain import build_task_completion_judge, build_task_worker
 from deep_agents.models import (
     AcceptanceCriterion,
@@ -17,6 +18,7 @@ from deep_agents.models import (
     TaskCard,
     Wave,
 )
+from deep_agents.observability import configure_logging
 from deep_agents.runtime import RuntimeEngine
 
 
@@ -58,10 +60,15 @@ def build_plan() -> ExecutionPlan:
 
 
 def main() -> None:
+    configure_logging()
     plan = build_plan()
+    settings = DeepAgentsSettings(
+        provider="openrouter",
+        model="qwen/qwen3.6-flash",
+    )
     engine = RuntimeEngine(
-        worker=build_task_worker(),
-        judge=build_task_completion_judge(),
+        worker=build_task_worker(settings=settings),
+        judge=build_task_completion_judge(settings=settings),
     )
     final_state = engine.invoke(
         plan,
