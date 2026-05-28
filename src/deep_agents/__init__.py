@@ -1,0 +1,2 @@
+"""Deep-agent architecture primitives."""
+
