@@ -1,3 +1,5 @@
+from langchain_core.runnables import RunnableLambda
+
 from deep_agents.models import (
     AgentAssignment,
     AgentKind,
@@ -12,7 +14,7 @@ from deep_agents.models import (
     TaskStatus,
     Wave,
 )
-from deep_agents.runtime import Dispatcher, PlanTracker, PromptQueue
+from deep_agents.runtime import Dispatcher, PlanTracker, PromptQueue, RuntimeEngine, TaskRunResult
 
 
 def build_execution_plan() -> ExecutionPlan:
@@ -112,3 +114,35 @@ def test_prompt_queue_places_lifo_interrupts_first() -> None:
     assert queue.pop().id == "P2"
     assert queue.pop().id == "P1"
     assert queue.pop() is None
+
+
+def test_runtime_engine_runs_dependent_tasks_to_completion() -> None:
+    def run_task(task: TaskCard) -> TaskRunResult:
+        return TaskRunResult(task_id=task.id, output={"message": f"ran {task.id}"})
+
+    def judge_task(payload: dict[str, object]) -> JudgeVerdict:
+        result = payload["result"]
+        assert isinstance(result, TaskRunResult)
+        return JudgeVerdict(
+            task_id=result.task_id,
+            verdict="pass",
+            overall_confidence=1.0,
+            recommendation=JudgeRecommendation.ADVANCE,
+        )
+
+    engine = RuntimeEngine(
+        worker=RunnableLambda(run_task),
+        judge=RunnableLambda(judge_task),
+    )
+
+    final_state = engine.invoke(
+        build_execution_plan(),
+        PlanState(objective=Objective(raw="Test plan")),
+    )
+
+    assert final_state["plan_state"].status == PlanStatus.COMPLETED
+    assert final_state["plan_state"].task_statuses == {
+        "T1": "completed",
+        "T2": "completed",
+    }
+    assert list(final_state["results"]) == ["T1", "T2"]
