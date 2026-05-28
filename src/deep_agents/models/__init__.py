@@ -15,6 +15,7 @@ from deep_agents.models.judges import (
     CriteriaResult,
     JudgeRecommendation,
     JudgeVerdict,
+    JudgeVerdictValue,
     ProcessAssessment,
     ProcessJudgment,
 )
@@ -52,6 +53,7 @@ __all__ = [
     "InterruptPriority",
     "JudgeRecommendation",
     "JudgeVerdict",
+    "JudgeVerdictValue",
     "LayeredContext",
     "Milestone",
     "Objective",
