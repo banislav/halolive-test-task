@@ -1,3 +1,5 @@
+import logging
+
 from langchain_core.runnables import RunnableLambda
 
 from deep_agents.models import (
@@ -63,6 +65,19 @@ def test_plan_tracker_unblocks_dependent_tasks_after_completion() -> None:
     assert tracker.state.task_statuses["T2"] == "ready"
 
 
+def test_plan_tracker_logs_state_changes(caplog) -> None:
+    plan = build_execution_plan()
+    tracker = PlanTracker(PlanState(objective=Objective(raw="Test plan")), plan)
+
+    with caplog.at_level(logging.INFO, logger="deep_agents"):
+        tracker.mark_running("T1")
+        tracker.apply_task_completion("T1")
+
+    messages = [record.message for record in caplog.records]
+    assert "task status changed" in messages
+    assert "plan status changed" in messages
+
+
 def test_plan_tracker_completes_when_all_tasks_pass_judgment() -> None:
     plan = build_execution_plan()
     tracker = PlanTracker(PlanState(objective=Objective(raw="Test plan")), plan)
@@ -105,6 +120,42 @@ def test_plan_tracker_marks_retry_as_ready_refining() -> None:
     assert tracker.state.task_statuses["T1"] == "ready"
 
 
+def test_plan_tracker_marks_hold_as_paused_refining() -> None:
+    plan = build_execution_plan()
+    tracker = PlanTracker(PlanState(objective=Objective(raw="Test plan")), plan)
+
+    ready_ids = tracker.apply_judge_verdict(
+        JudgeVerdict(
+            task_id="T1",
+            verdict="partial",
+            overall_confidence=0.7,
+            recommendation=JudgeRecommendation.HOLD,
+        )
+    )
+
+    assert ready_ids == []
+    assert tracker.state.status == "refining"
+    assert tracker.state.task_statuses["T1"] == "paused"
+
+
+def test_plan_tracker_marks_block_as_paused_refining() -> None:
+    plan = build_execution_plan()
+    tracker = PlanTracker(PlanState(objective=Objective(raw="Test plan")), plan)
+
+    ready_ids = tracker.apply_judge_verdict(
+        JudgeVerdict(
+            task_id="T1",
+            verdict="partial",
+            overall_confidence=0.7,
+            recommendation=JudgeRecommendation.BLOCK,
+        )
+    )
+
+    assert ready_ids == []
+    assert tracker.state.status == "refining"
+    assert tracker.state.task_statuses["T1"] == "paused"
+
+
 def test_prompt_queue_places_lifo_interrupts_first() -> None:
     queue = PromptQueue()
     queue.push(PromptQueueItem(id="P1", content="Normal feedback", priority=3))
@@ -114,6 +165,20 @@ def test_prompt_queue_places_lifo_interrupts_first() -> None:
     assert queue.pop().id == "P2"
     assert queue.pop().id == "P1"
     assert queue.pop() is None
+
+
+def test_task_run_result_accepts_provider_result_alias_and_status() -> None:
+    result = TaskRunResult.model_validate(
+        {
+            "task_id": "T1",
+            "status": "success",
+            "result": {"summary": "Done"},
+            "artifacts": [],
+        }
+    )
+
+    assert result.output == {"summary": "Done"}
+    assert result.status == "success"
 
 
 def test_runtime_engine_runs_dependent_tasks_to_completion() -> None:
@@ -146,3 +211,31 @@ def test_runtime_engine_runs_dependent_tasks_to_completion() -> None:
         "T2": "completed",
     }
     assert list(final_state["results"]) == ["T1", "T2"]
+
+
+def test_runtime_engine_logs_worker_errors(caplog) -> None:
+    def fail_task(_: TaskCard) -> TaskRunResult:
+        raise RuntimeError("worker exploded")
+
+    def judge_task(_: dict[str, object]) -> JudgeVerdict:
+        raise AssertionError("judge should not run")
+
+    engine = RuntimeEngine(
+        worker=RunnableLambda(fail_task),
+        judge=RunnableLambda(judge_task),
+    )
+
+    with caplog.at_level(logging.ERROR, logger="deep_agents"):
+        try:
+            engine.invoke(
+                build_execution_plan(),
+                PlanState(objective=Objective(raw="Test plan")),
+            )
+        except RuntimeError as exc:
+            assert str(exc) == "worker exploded"
+        else:
+            raise AssertionError("expected worker failure")
+
+    messages = [record.message for record in caplog.records]
+    assert "worker failed" in messages
+    assert "runtime engine invoke failed" in messages
