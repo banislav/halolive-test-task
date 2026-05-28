@@ -99,3 +99,41 @@ def test_judge_verdict_and_prompt_priority() -> None:
 
     assert verdict.recommendation == "advance"
     assert prompt.is_lifo
+
+
+def test_judge_verdict_accepts_provider_string_criteria_results() -> None:
+    verdict = JudgeVerdict(
+        task_id="T1",
+        verdict="pass",
+        criteria_results=["Output includes a concise project summary: Met"],
+        overall_confidence=0.95,
+        recommendation=JudgeRecommendation.ADVANCE,
+    )
+
+    assert verdict.criteria_results[0].criterion == "Output includes a concise project summary"
+    assert verdict.criteria_results[0].met is True
+    assert verdict.criteria_results[0].evidence == "Output includes a concise project summary: Met"
+
+
+def test_judge_verdict_accepts_hold_recommendation() -> None:
+    verdict = JudgeVerdict(
+        task_id="T1",
+        verdict="partial",
+        criteria_results=["Output includes a concise project summary: Not met"],
+        overall_confidence=0.7,
+        recommendation="hold",
+    )
+
+    assert verdict.recommendation == "hold"
+
+
+def test_judge_verdict_accepts_block_recommendation() -> None:
+    verdict = JudgeVerdict(
+        task_id="T1",
+        verdict="partial",
+        criteria_results=["Required input is missing: Not met"],
+        overall_confidence=0.7,
+        recommendation="block",
+    )
+
+    assert verdict.recommendation == "block"

@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Any
 
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from deep_agents.models.base import DeepAgentsModel
 
 
 class JudgeRecommendation(StrEnum):
     ADVANCE = "advance"
+    HOLD = "hold"
+    BLOCK = "block"
     RETRY = "retry"
     REPLAN = "replan"
     ESCALATE = "escalate"
@@ -32,6 +35,33 @@ class JudgeVerdict(DeepAgentsModel):
     criteria_results: list[CriteriaResult] = Field(default_factory=list)
     overall_confidence: float = Field(ge=0, le=1)
     recommendation: JudgeRecommendation
+
+    @field_validator("criteria_results", mode="before")
+    @classmethod
+    def normalize_criteria_results(cls, value: Any) -> Any:
+        """Accept provider responses that return criteria results as strings."""
+        if not isinstance(value, list):
+            return value
+
+        normalized: list[Any] = []
+        for item in value:
+            if isinstance(item, str):
+                normalized.append(_criteria_result_from_text(item))
+            else:
+                normalized.append(item)
+        return normalized
+
+
+def _criteria_result_from_text(text: str) -> dict[str, Any]:
+    criterion, separator, status = text.partition(":")
+    status_text = status.strip().lower() if separator else text.strip().lower()
+    met = any(token in status_text for token in ("met", "pass", "passed", "true", "yes"))
+    unmet = any(token in status_text for token in ("not met", "fail", "failed", "false", "no"))
+    return {
+        "criterion": criterion.strip() or text,
+        "met": False if unmet else met,
+        "evidence": text,
+    }
 
 
 class ProcessAssessment(StrEnum):

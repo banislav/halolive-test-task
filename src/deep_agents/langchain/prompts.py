@@ -6,11 +6,19 @@ from deep_agents.models import TaskCard
 from deep_agents.runtime import TaskRunResult
 
 WORKER_SYSTEM_PROMPT = """You are a deep-agent worker.
-Execute exactly the assigned task card. Return only structured output matching TaskRunResult."""
+Execute exactly the assigned task card.
+Return only valid JSON matching the TaskRunResult schema.
+Use this JSON shape: {"task_id": "...", "output": {}, "artifacts": []}."""
 
 JUDGE_SYSTEM_PROMPT = """You are a read-only task completion judge.
 Evaluate whether the task result satisfies the task acceptance criteria.
-Return only JudgeVerdict."""
+Return only valid JSON matching the JudgeVerdict schema.
+Use this JSON shape: {"task_id": "...", "verdict": "pass", "criteria_results":
+[{"criterion": "...", "met": true, "evidence": "..."}], "overall_confidence": 0.0,
+"recommendation": "advance"}.
+Use recommendation "hold" when execution should pause for more information.
+Use recommendation "block" when the task cannot continue because a dependency or required
+input is missing."""
 
 
 def build_worker_messages(task: TaskCard) -> list[BaseMessage]:
