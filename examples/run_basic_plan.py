@@ -15,11 +15,13 @@ from deep_agents.models import (
     Objective,
     PlanState,
     SkillAssignment,
+    SkillDefinition,
     TaskCard,
     Wave,
 )
 from deep_agents.observability import configure_logging
 from deep_agents.runtime import RuntimeEngine
+from deep_agents.skills import SkillLoader, SkillRegistry
 
 
 def build_plan() -> ExecutionPlan:
@@ -66,8 +68,22 @@ def main() -> None:
         provider="openrouter",
         model="qwen/qwen3.6-flash",
     )
+    skill_loader = SkillLoader(
+        SkillRegistry(
+            [
+                SkillDefinition(
+                    id="technical_writing",
+                    name="Technical Writing",
+                    prompt=(
+                        "Write concise, concrete project prose. Prefer short paragraphs, "
+                        "explicit outcomes, and plain engineering language."
+                    ),
+                )
+            ]
+        )
+    )
     engine = RuntimeEngine(
-        worker=build_task_worker(settings=settings),
+        worker=build_task_worker(settings=settings, skill_loader=skill_loader),
         judge=build_task_completion_judge(settings=settings),
     )
     final_state = engine.invoke(

@@ -34,7 +34,16 @@ from deep_agents.models.planning import (
 )
 from deep_agents.models.prompts import InterruptPriority, PromptCategory, PromptQueueItem
 from deep_agents.models.signals import ProgressSignal, ProgressSignalPayload, ProgressSignalType
-from deep_agents.models.skills import SkillAssignment, SkillDefinition, SkillLoadMode, SkillPriority
+from deep_agents.models.skills import (
+    SkillAssignment,
+    SkillContextCost,
+    SkillDefinition,
+    SkillLoadMode,
+    SkillPriority,
+    SkillResource,
+    SkillSubSkill,
+    SkillTool,
+)
 
 __all__ = [
     "AcceptanceCriterion",
@@ -69,9 +78,13 @@ __all__ = [
     "RetryPolicy",
     "Risk",
     "SkillAssignment",
+    "SkillContextCost",
     "SkillDefinition",
     "SkillLoadMode",
     "SkillPriority",
+    "SkillResource",
+    "SkillSubSkill",
+    "SkillTool",
     "Task",
     "TaskCard",
     "TaskInvocation",

@@ -21,11 +21,14 @@ Use recommendation "block" when the task cannot continue because a dependency or
 input is missing."""
 
 
-def build_worker_messages(task: TaskCard) -> list[BaseMessage]:
+def build_worker_messages(task: TaskCard, skill_context: str | None = None) -> list[BaseMessage]:
     """Build LangChain messages for executing a task card."""
+    human_sections = [_task_card_text(task)]
+    if skill_context:
+        human_sections.extend(["", skill_context])
     return [
         SystemMessage(content=WORKER_SYSTEM_PROMPT),
-        HumanMessage(content=_task_card_text(task)),
+        HumanMessage(content="\n".join(human_sections)),
     ]
 
 

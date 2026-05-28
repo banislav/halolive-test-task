@@ -19,9 +19,11 @@ from deep_agents.models import (
     JudgeRecommendation,
     JudgeVerdict,
     SkillAssignment,
+    SkillDefinition,
     TaskCard,
 )
 from deep_agents.runtime import TaskRunResult
+from deep_agents.skills import SkillLoader, SkillRegistry
 
 
 class StubStructuredChatModel:
@@ -60,6 +62,17 @@ def test_worker_prompt_includes_task_context() -> None:
     assert "technical_writing" in content
 
 
+def test_worker_prompt_includes_loaded_skill_context() -> None:
+    messages = build_worker_messages(
+        build_task_card(),
+        skill_context="Loaded skills:\n- Technical Writing\n  instructions:\n    Be concise.",
+    )
+
+    content = _joined_message_content(messages)
+    assert "Loaded skills:" in content
+    assert "Be concise." in content
+
+
 def test_judge_prompt_includes_task_result() -> None:
     messages = build_judge_messages(
         build_task_card(),
@@ -82,6 +95,41 @@ def test_task_worker_factory_uses_structured_output() -> None:
 
     assert model.requested_schema is TaskRunResult
     assert result == TaskRunResult(task_id="T1", output={"summary": "Done"})
+
+
+def test_task_worker_factory_injects_loaded_skills() -> None:
+    captured_prompts: list[str] = []
+
+    class CapturingStructuredChatModel(StubStructuredChatModel):
+        def with_structured_output(self, schema: object) -> RunnableLambda:
+            self.requested_schema = schema
+
+            def capture(messages: list[BaseMessage]) -> dict[str, object]:
+                captured_prompts.append(_joined_message_content(messages))
+                return {"task_id": "T1", "output": {"summary": "Done"}, "artifacts": []}
+
+            return RunnableLambda(capture)
+
+    skill_loader = SkillLoader(
+        SkillRegistry(
+            [
+                SkillDefinition(
+                    id="technical_writing",
+                    name="Technical Writing",
+                    prompt="Be concise and specific.",
+                )
+            ]
+        )
+    )
+
+    worker = build_task_worker(
+        model=CapturingStructuredChatModel({}),  # type: ignore[arg-type]
+        skill_loader=skill_loader,
+    )
+    worker.invoke(build_task_card())
+
+    assert "Loaded skills:" in captured_prompts[0]
+    assert "Be concise and specific." in captured_prompts[0]
 
 
 def test_task_completion_judge_factory_uses_structured_output() -> None:
