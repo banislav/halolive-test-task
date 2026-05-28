@@ -39,7 +39,12 @@ class Dispatcher:
                 TaskStatus(task_statuses.get(blocker)) == TaskStatus.COMPLETED
                 for blocker in task.blocked_by
             )
-            if status in {TaskStatus.PENDING, TaskStatus.BLOCKED} and dependencies_met:
+            is_dispatchable = status in {
+                TaskStatus.PENDING,
+                TaskStatus.BLOCKED,
+                TaskStatus.READY,
+            }
+            if is_dispatchable and dependencies_met:
                 ready.append(task)
         return ready
 
