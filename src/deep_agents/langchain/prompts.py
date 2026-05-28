@@ -2,8 +2,19 @@ from __future__ import annotations
 
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 
-from deep_agents.models import TaskCard
+from deep_agents.models import ExecutionPlannerInput, PlannerInput, TaskCard
 from deep_agents.runtime import TaskRunResult
+
+INITIAL_PLANNER_SYSTEM_PROMPT = """You are InitialPlannerAgent.
+Transform a raw user objective into a DiscoveryPlan.
+Return only valid JSON matching the DiscoveryPlan schema.
+Include objective, clarifications, milestones, gates, capability_map, skill_assignments,
+risk_register, and dependency_graph."""
+
+EXECUTION_PLANNER_SYSTEM_PROMPT = """You are ExecutionPlannerAgent.
+Convert a DiscoveryPlan into a dispatchable ExecutionPlan.
+Return only valid JSON matching the ExecutionPlan schema.
+Include waves, task_cards, dependency_graph, and data_flow."""
 
 WORKER_SYSTEM_PROMPT = """You are a deep-agent worker.
 Execute exactly the assigned task card.
@@ -19,6 +30,60 @@ Use this JSON shape: {"task_id": "...", "verdict": "pass", "criteria_results":
 Use recommendation "hold" when execution should pause for more information.
 Use recommendation "block" when the task cannot continue because a dependency or required
 input is missing."""
+
+
+def build_initial_planner_messages(planner_input: PlannerInput) -> list[BaseMessage]:
+    """Build LangChain messages for the initial discovery planner."""
+    return [
+        SystemMessage(content=INITIAL_PLANNER_SYSTEM_PROMPT),
+        HumanMessage(
+            content="\n".join(
+                [
+                    f"Objective: {planner_input.objective}",
+                    "Constraints:",
+                    _bullets(planner_input.constraints),
+                    "Available tools:",
+                    _bullets(planner_input.available_tools),
+                    "Available skills:",
+                    _bullets(planner_input.available_skills),
+                    "Context JSON:",
+                    planner_input.model_dump_json(indent=2),
+                    "Expected JSON top-level shape:",
+                    (
+                        '{"objective": {}, "clarifications": [], "milestones": [], '
+                        '"gates": [], "capability_map": {}, "skill_assignments": {}, '
+                        '"risk_register": [], "dependency_graph": {}}'
+                    ),
+                ]
+            )
+        ),
+    ]
+
+
+def build_execution_planner_messages(planner_input: ExecutionPlannerInput) -> list[BaseMessage]:
+    """Build LangChain messages for execution planning."""
+    return [
+        SystemMessage(content=EXECUTION_PLANNER_SYSTEM_PROMPT),
+        HumanMessage(
+            content="\n".join(
+                [
+                    "DiscoveryPlan JSON:",
+                    planner_input.discovery_plan.model_dump_json(indent=2),
+                    "Available tools:",
+                    _bullets(planner_input.available_tools),
+                    "Available skills:",
+                    _bullets(planner_input.available_skills),
+                    "Context JSON:",
+                    planner_input.model_dump_json(indent=2),
+                    "Expected JSON top-level shape:",
+                    (
+                        '{"id": "...", "objective": "...", "waves": [], '
+                        '"task_cards": [], "dependency_graph": {}, "data_flow": {}}'
+                    ),
+                ]
+            )
+        ),
+    ]
 
 
 def build_worker_messages(task: TaskCard, skill_context: str | None = None) -> list[BaseMessage]:
@@ -62,3 +127,9 @@ def _task_card_text(task: TaskCard) -> str:
             skills or "- No skills assigned",
         ]
     )
+
+
+def _bullets(items: list[str]) -> str:
+    if not items:
+        return "- None provided"
+    return "\n".join(f"- {item}" for item in items)

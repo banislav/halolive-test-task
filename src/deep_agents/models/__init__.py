@@ -19,6 +19,7 @@ from deep_agents.models.judges import (
     ProcessAssessment,
     ProcessJudgment,
 )
+from deep_agents.models.planners import ExecutionPlannerInput, PlannerInput
 from deep_agents.models.planning import (
     AcceptanceCriterion,
     Clarification,
@@ -59,6 +60,7 @@ __all__ = [
     "DependencyGraph",
     "DiscoveryPlan",
     "ExecutionPlan",
+    "ExecutionPlannerInput",
     "Gate",
     "GateType",
     "InterruptPriority",
@@ -70,6 +72,7 @@ __all__ = [
     "Objective",
     "PlanState",
     "PlanStatus",
+    "PlannerInput",
     "ProcessAssessment",
     "ProcessJudgment",
     "ProgressSignal",

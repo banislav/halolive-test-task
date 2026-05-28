@@ -8,10 +8,12 @@ from deep_agents.models import (
     Clarification,
     DiscoveryPlan,
     ExecutionPlan,
+    ExecutionPlannerInput,
     JudgeRecommendation,
     JudgeVerdict,
     Milestone,
     Objective,
+    PlannerInput,
     PlanState,
     PromptQueueItem,
     Risk,
@@ -96,6 +98,27 @@ def test_discovery_plan_matches_architecture_artifacts() -> None:
 
     assert plan.clarifications[0].resolution == "Assumed deep-agent architecture"
     assert plan.milestones[0].tasks[0].risks[0].fallback == "Use cached/archive versions"
+
+
+def test_planner_input_models_hold_structured_context() -> None:
+    discovery = DiscoveryPlan(objective=Objective(raw="Research a topic"))
+    planner_input = PlannerInput(
+        objective="Research a topic",
+        constraints=["Use credible sources"],
+        available_tools=["web_search"],
+        available_skills=["academic_research"],
+        context={"audience": "engineers"},
+    )
+    execution_input = ExecutionPlannerInput(
+        discovery_plan=discovery,
+        available_tools=planner_input.available_tools,
+        available_skills=planner_input.available_skills,
+        context=planner_input.context,
+    )
+
+    assert planner_input.context["audience"] == "engineers"
+    assert execution_input.discovery_plan is discovery
+    assert execution_input.available_skills == ["academic_research"]
 
 
 def test_plan_state_rejects_mismatched_discovery_objective() -> None:
