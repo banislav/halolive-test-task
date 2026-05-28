@@ -5,7 +5,7 @@ from pydantic import Field, model_validator
 from deep_agents.models.agents import AgentAssignment
 from deep_agents.models.base import DeepAgentsModel, JsonObject, TimestampedModel
 from deep_agents.models.context import ArtifactRef, ContextBudget
-from deep_agents.models.planning import AcceptanceCriterion
+from deep_agents.models.planning import AcceptanceCriterion, Risk
 
 
 class RetryPolicy(DeepAgentsModel):
@@ -16,6 +16,7 @@ class RetryPolicy(DeepAgentsModel):
 
 class TaskInvocation(DeepAgentsModel):
     method: str = "async_dispatch"
+    input: JsonObject = Field(default_factory=dict)
     input_schema: JsonObject = Field(default_factory=dict)
     expected_output_schema: JsonObject = Field(default_factory=dict)
     timeout_seconds: int = Field(default=120, gt=0)
@@ -40,6 +41,8 @@ class TaskCard(DeepAgentsModel):
     responsiveness: TaskResponsiveness = Field(default_factory=TaskResponsiveness)
     context_budget: ContextBudget = Field(default_factory=ContextBudget)
     input_artifacts: list[ArtifactRef] = Field(default_factory=list)
+    estimated_complexity: str = "medium"
+    risks: list[Risk] = Field(default_factory=list)
 
 
 class Wave(DeepAgentsModel):

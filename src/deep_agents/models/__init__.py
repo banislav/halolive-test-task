@@ -21,6 +21,7 @@ from deep_agents.models.judges import (
 )
 from deep_agents.models.planning import (
     AcceptanceCriterion,
+    Clarification,
     DiscoveryPlan,
     Gate,
     GateType,
@@ -51,6 +52,7 @@ __all__ = [
     "AgentKind",
     "AgentLifecycleState",
     "ArtifactRef",
+    "Clarification",
     "ContextBudget",
     "CriteriaResult",
     "DeepAgentsModel",

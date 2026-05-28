@@ -5,6 +5,7 @@ from deep_agents.models import (
     AcceptanceCriterion,
     AgentAssignment,
     AgentKind,
+    Clarification,
     DiscoveryPlan,
     ExecutionPlan,
     JudgeRecommendation,
@@ -13,6 +14,7 @@ from deep_agents.models import (
     Objective,
     PlanState,
     PromptQueueItem,
+    Risk,
     SkillAssignment,
     SkillLoadMode,
     Task,
@@ -48,6 +50,54 @@ def test_discovery_plan_and_plan_state_share_objective() -> None:
     assert state.status == "initializing"
 
 
+def test_discovery_plan_matches_architecture_artifacts() -> None:
+    plan = DiscoveryPlan(
+        objective=Objective(raw="Research a topic"),
+        clarifications=[
+            Clarification(
+                question="Which topic?",
+                resolution="Assumed deep-agent architecture",
+            )
+        ],
+        milestones=[
+            Milestone(
+                id="M1",
+                name="Research Phase",
+                gates=["G1"],
+                tasks=[
+                    Task(
+                        id="T1",
+                        name="Gather sources",
+                        acceptance_criteria=[
+                            AcceptanceCriterion(
+                                description="Minimum 5 credible sources identified"
+                            )
+                        ],
+                        tools_needed=["web_search", "file_write"],
+                        skills_needed=["academic_research"],
+                        estimated_complexity="medium",
+                        risks=[
+                            Risk(
+                                description="Sources may be paywalled",
+                                fallback="Use cached/archive versions",
+                            )
+                        ],
+                    )
+                ],
+            )
+        ],
+        capability_map={"T1": ["web_search", "file_write"]},
+        skill_assignments={"T1": ["academic_research"]},
+        risk_register=[
+            Risk(description="Sources may be paywalled", fallback="Use cached/archive versions")
+        ],
+        dependency_graph={"T1": []},
+    )
+
+    assert plan.clarifications[0].resolution == "Assumed deep-agent architecture"
+    assert plan.milestones[0].tasks[0].risks[0].fallback == "Use cached/archive versions"
+
+
 def test_plan_state_rejects_mismatched_discovery_objective() -> None:
     with pytest.raises(ValidationError, match="plan objective must match"):
         PlanState(
@@ -76,6 +126,50 @@ def test_execution_plan_validates_wave_task_references() -> None:
     )
 
     assert plan.task_cards[0].assigned_to.name == "ResearchWorker"
+
+
+def test_task_card_matches_architecture_schema() -> None:
+    card = TaskCard(
+        id="T3",
+        name="Search academic papers",
+        wave=1,
+        blocked_by=["T1", "T2"],
+        blocks=["T6"],
+        assigned_to=AgentAssignment(
+            type=AgentKind.WORKER,
+            name="ResearchWorker",
+            skills=[SkillAssignment(id="academic_research", load_mode=SkillLoadMode.PROGRESSIVE)],
+        ),
+        invocation={
+            "method": "async_dispatch",
+            "input": {"query": "deep agents", "max_results": 5},
+            "input_schema": {"query": "string", "max_results": "int"},
+            "expected_output_schema": {
+                "results": "list[{title, url, abstract, relevance_score}]",
+                "artifacts": "list[filepath]",
+            },
+            "timeout_seconds": 120,
+            "retry_policy": {
+                "max_retries": 2,
+                "backoff": "exponential",
+                "on_exhaust": "escalate_to_replanner",
+            },
+        },
+        acceptance_criteria=[
+            AcceptanceCriterion(description="At least 5 results with relevance_score > 0.7")
+        ],
+        responsiveness={
+            "heartbeat_interval_seconds": 15,
+            "progress_events": True,
+            "early_findings_enabled": True,
+        },
+        context_budget={"max_tokens": 4000},
+        estimated_complexity="medium",
+        risks=[Risk(description="Sources may be paywalled", fallback="Use archive versions")],
+    )
+
+    assert card.invocation.input["query"] == "deep agents"
+    assert card.risks[0].fallback == "Use archive versions"
 
 
 def test_execution_plan_rejects_unknown_wave_task_id() -> None:
