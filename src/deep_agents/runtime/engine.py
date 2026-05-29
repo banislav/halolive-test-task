@@ -16,6 +16,7 @@ from deep_agents.models import (
     ProgressSignal,
     ProgressSignalPayload,
     ProgressSignalType,
+    RuntimeCommand,
     TaskCard,
 )
 from deep_agents.runtime.observability import ProgressSignalBus
@@ -35,6 +36,7 @@ class RuntimeGraphState(TypedDict):
     results: NotRequired[dict[str, TaskRunResult]]
     process_judgments: NotRequired[list[ProcessJudgment]]
     observer_judgments: NotRequired[list[ObserverJudgment]]
+    runtime_commands: NotRequired[list[RuntimeCommand]]
 
 
 class RuntimeEngine:
@@ -69,6 +71,7 @@ class RuntimeEngine:
             "results": {},
             "process_judgments": [],
             "observer_judgments": [],
+            "runtime_commands": [],
         }
         try:
             final_state = self.graph.invoke(
@@ -109,6 +112,7 @@ class RuntimeEngine:
             "results": {},
             "process_judgments": [],
             "observer_judgments": [],
+            "runtime_commands": [],
         }
         try:
             final_state = await self.graph.ainvoke(
@@ -472,15 +476,34 @@ class RuntimeEngine:
         )
 
         for judgment in judgments:
+            tracker = PlanTracker(state["plan_state"], state["execution_plan"])
             if isinstance(judgment, ProcessJudgment):
                 state.setdefault("process_judgments", []).append(judgment)
                 logger.info(
                     "process judgment recorded",
                     extra={"task_id": judgment.task_id, "assessment": judgment.assessment},
                 )
+                commands = tracker.apply_process_judgment(judgment)
             elif isinstance(judgment, ObserverJudgment):
                 state.setdefault("observer_judgments", []).append(judgment)
                 logger.info(
                     "observer judgment recorded",
                     extra={"health": judgment.health},
+                )
+                commands = tracker.apply_observer_judgment(
+                    judgment,
+                    task_id=state.get("current_task_id"),
+                )
+            else:
+                commands = []
+
+            if commands:
+                state.setdefault("runtime_commands", []).extend(commands)
+                logger.info(
+                    "runtime commands recorded",
+                    extra={
+                        "task_id": task_id,
+                        "command_count": len(commands),
+                        "command_types": [command.type for command in commands],
+                    },
                 )

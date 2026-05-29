@@ -402,6 +402,10 @@ def test_runtime_engine_emits_progress_signals_and_collects_judgments() -> None:
     assert any(signal.signal_type == "finding" for signal in signals)
     assert final_state["process_judgments"]
     assert final_state["observer_judgments"]
+    assert any(
+        command.type == RuntimeCommandType.MARK_EARLY_COMPLETE
+        for command in final_state["runtime_commands"]
+    )
 
 
 def test_runtime_engine_emits_error_signal_before_worker_failure_reraises() -> None:
