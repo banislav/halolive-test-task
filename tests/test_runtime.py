@@ -16,7 +16,16 @@ from deep_agents.models import (
     TaskStatus,
     Wave,
 )
-from deep_agents.runtime import Dispatcher, PlanTracker, PromptQueue, RuntimeEngine, TaskRunResult
+from deep_agents.runtime import (
+    Dispatcher,
+    ObserverJudge,
+    PlanTracker,
+    ProcessJudge,
+    ProgressSignalBus,
+    PromptQueue,
+    RuntimeEngine,
+    TaskRunResult,
+)
 
 
 def build_execution_plan() -> ExecutionPlan:
@@ -239,3 +248,73 @@ def test_runtime_engine_logs_worker_errors(caplog) -> None:
     messages = [record.message for record in caplog.records]
     assert "worker failed" in messages
     assert "runtime engine invoke failed" in messages
+
+
+def test_runtime_engine_emits_progress_signals_and_collects_judgments() -> None:
+    def run_task(task: TaskCard) -> TaskRunResult:
+        return TaskRunResult(task_id=task.id, output={"message": f"ran {task.id}"})
+
+    def judge_task(payload: dict[str, object]) -> JudgeVerdict:
+        result = payload["result"]
+        assert isinstance(result, TaskRunResult)
+        return JudgeVerdict(
+            task_id=result.task_id,
+            verdict="pass",
+            overall_confidence=1.0,
+            recommendation=JudgeRecommendation.ADVANCE,
+        )
+
+    bus = ProgressSignalBus()
+    bus.subscribe_process(ProcessJudge())
+    bus.subscribe_observer(ObserverJudge())
+    engine = RuntimeEngine(
+        worker=RunnableLambda(run_task),
+        judge=RunnableLambda(judge_task),
+        progress_bus=bus,
+    )
+
+    final_state = engine.invoke(
+        build_execution_plan(),
+        PlanState(objective=Objective(raw="Test plan")),
+    )
+
+    signals = bus.signals()
+    signal_statuses = [signal.payload.status for signal in signals]
+    assert "dispatched" in signal_statuses
+    assert "worker_started" in signal_statuses
+    assert "worker_completed" in signal_statuses
+    assert "judge_started" in signal_statuses
+    assert "judge_completed" in signal_statuses
+    assert "verdict_applied" in signal_statuses
+    assert any(signal.signal_type == "finding" for signal in signals)
+    assert final_state["process_judgments"]
+    assert final_state["observer_judgments"]
+
+
+def test_runtime_engine_emits_error_signal_before_worker_failure_reraises() -> None:
+    def fail_task(_: TaskCard) -> TaskRunResult:
+        raise RuntimeError("worker exploded")
+
+    def judge_task(_: dict[str, object]) -> JudgeVerdict:
+        raise AssertionError("judge should not run")
+
+    bus = ProgressSignalBus()
+    engine = RuntimeEngine(
+        worker=RunnableLambda(fail_task),
+        judge=RunnableLambda(judge_task),
+        progress_bus=bus,
+    )
+
+    try:
+        engine.invoke(
+            build_execution_plan(),
+            PlanState(objective=Objective(raw="Test plan")),
+        )
+    except RuntimeError as exc:
+        assert str(exc) == "worker exploded"
+    else:
+        raise AssertionError("expected worker failure")
+
+    signals = bus.signals(task_id="T1")
+    assert signals[-1].signal_type == "error"
+    assert signals[-1].payload.status == "worker_failed"

@@ -5,8 +5,20 @@ from typing import Any, NotRequired, TypedDict
 from langchain_core.runnables import Runnable
 from langgraph.graph import END, StateGraph
 
-from deep_agents.models import ExecutionPlan, JudgeVerdict, PlanState, PlanStatus, TaskCard
+from deep_agents.models import (
+    ExecutionPlan,
+    JudgeVerdict,
+    ObserverJudgment,
+    PlanState,
+    PlanStatus,
+    ProcessJudgment,
+    ProgressSignal,
+    ProgressSignalPayload,
+    ProgressSignalType,
+    TaskCard,
+)
 from deep_agents.observability import get_logger
+from deep_agents.runtime.observability import ProgressSignalBus
 from deep_agents.runtime.plan_tracker import PlanTracker
 from deep_agents.runtime.results import TaskRunResult
 
@@ -21,6 +33,8 @@ class RuntimeGraphState(TypedDict):
     latest_result: NotRequired[TaskRunResult | None]
     latest_verdict: NotRequired[JudgeVerdict | None]
     results: NotRequired[dict[str, TaskRunResult]]
+    process_judgments: NotRequired[list[ProcessJudgment]]
+    observer_judgments: NotRequired[list[ObserverJudgment]]
 
 
 class RuntimeEngine:
@@ -30,11 +44,13 @@ class RuntimeEngine:
         *,
         worker: Runnable[TaskCard, TaskRunResult | dict[str, Any]],
         judge: Runnable[dict[str, Any], JudgeVerdict | dict[str, Any]],
+        progress_bus: ProgressSignalBus | None = None,
         recursion_limit: int = 100,
     ) -> None:
         """Create an engine from LangChain runnables for task work and judgment."""
         self.worker = worker
         self.judge = judge
+        self.progress_bus = progress_bus or ProgressSignalBus()
         self.recursion_limit = recursion_limit
         self.graph = self._build_graph()
 
@@ -51,6 +67,8 @@ class RuntimeEngine:
             "latest_result": None,
             "latest_verdict": None,
             "results": {},
+            "process_judgments": [],
+            "observer_judgments": [],
         }
         try:
             final_state = self.graph.invoke(
@@ -89,6 +107,8 @@ class RuntimeEngine:
             "latest_result": None,
             "latest_verdict": None,
             "results": {},
+            "process_judgments": [],
+            "observer_judgments": [],
         }
         try:
             final_state = await self.graph.ainvoke(
@@ -151,6 +171,18 @@ class RuntimeEngine:
             task_id = ready_ids[0]
             tracker.mark_running(task_id)
             state["current_task_id"] = task_id
+            self._publish_signal(
+                state,
+                task_id=task_id,
+                signal_type=ProgressSignalType.PROGRESS,
+                payload=ProgressSignalPayload(
+                    status="dispatched",
+                    data={
+                        "execution_plan_id": state["execution_plan"].id,
+                        "wave": self._current_task(state).wave,
+                    },
+                ),
+            )
             logger.info(
                 "task dispatched",
                 extra={"execution_plan_id": state["execution_plan"].id, "task_id": task_id},
@@ -164,11 +196,45 @@ class RuntimeEngine:
         task = self._current_task(state)
         try:
             logger.info("worker started", extra={"task_id": task.id})
+            self._publish_signal(
+                state,
+                task_id=task.id,
+                signal_type=ProgressSignalType.HEARTBEAT,
+                payload=ProgressSignalPayload(status="worker_started"),
+            )
             result = self.worker.invoke(task)
             state["latest_result"] = self._coerce_result(task.id, result)
+            self._publish_signal(
+                state,
+                task_id=task.id,
+                signal_type=ProgressSignalType.PROGRESS,
+                payload=ProgressSignalPayload(status="worker_completed", percent_complete=100),
+            )
+            if state["latest_result"].output:
+                self._publish_signal(
+                    state,
+                    task_id=task.id,
+                    signal_type=ProgressSignalType.FINDING,
+                    payload=ProgressSignalPayload(
+                        status="worker_output",
+                        actionable=True,
+                        relevance_score=1.0,
+                        data={"output": state["latest_result"].output},
+                    ),
+                )
             logger.info("worker completed", extra={"task_id": task.id})
             return state
         except Exception:
+            self._publish_signal(
+                state,
+                task_id=task.id,
+                signal_type=ProgressSignalType.ERROR,
+                payload=ProgressSignalPayload(
+                    status="worker_failed",
+                    error_type="worker_error",
+                    detail=f"Worker failed for task {task.id}",
+                ),
+            )
             logger.exception("worker failed", extra={"task_id": task.id})
             raise
 
@@ -176,11 +242,45 @@ class RuntimeEngine:
         task = self._current_task(state)
         try:
             logger.info("worker async started", extra={"task_id": task.id})
+            self._publish_signal(
+                state,
+                task_id=task.id,
+                signal_type=ProgressSignalType.HEARTBEAT,
+                payload=ProgressSignalPayload(status="worker_started"),
+            )
             result = await self.worker.ainvoke(task)
             state["latest_result"] = self._coerce_result(task.id, result)
+            self._publish_signal(
+                state,
+                task_id=task.id,
+                signal_type=ProgressSignalType.PROGRESS,
+                payload=ProgressSignalPayload(status="worker_completed", percent_complete=100),
+            )
+            if state["latest_result"].output:
+                self._publish_signal(
+                    state,
+                    task_id=task.id,
+                    signal_type=ProgressSignalType.FINDING,
+                    payload=ProgressSignalPayload(
+                        status="worker_output",
+                        actionable=True,
+                        relevance_score=1.0,
+                        data={"output": state["latest_result"].output},
+                    ),
+                )
             logger.info("worker async completed", extra={"task_id": task.id})
             return state
         except Exception:
+            self._publish_signal(
+                state,
+                task_id=task.id,
+                signal_type=ProgressSignalType.ERROR,
+                payload=ProgressSignalPayload(
+                    status="worker_failed",
+                    error_type="worker_error",
+                    detail=f"Worker failed for task {task.id}",
+                ),
+            )
             logger.exception("worker async failed", extra={"task_id": task.id})
             raise
 
@@ -189,11 +289,40 @@ class RuntimeEngine:
         result = state.get("latest_result")
         try:
             logger.info("judge started", extra={"task_id": task.id})
+            self._publish_signal(
+                state,
+                task_id=task.id,
+                signal_type=ProgressSignalType.PROGRESS,
+                payload=ProgressSignalPayload(status="judge_started"),
+            )
             verdict = self.judge.invoke({"task": task, "result": result})
             state["latest_verdict"] = self._coerce_verdict(verdict)
+            self._publish_signal(
+                state,
+                task_id=task.id,
+                signal_type=ProgressSignalType.PROGRESS,
+                payload=ProgressSignalPayload(
+                    status="judge_completed",
+                    data={
+                        "verdict": state["latest_verdict"].verdict,
+                        "recommendation": state["latest_verdict"].recommendation,
+                        "confidence": state["latest_verdict"].overall_confidence,
+                    },
+                ),
+            )
             logger.info("judge completed", extra={"task_id": task.id})
             return state
         except Exception:
+            self._publish_signal(
+                state,
+                task_id=task.id,
+                signal_type=ProgressSignalType.ERROR,
+                payload=ProgressSignalPayload(
+                    status="judge_failed",
+                    error_type="judge_error",
+                    detail=f"Judge failed for task {task.id}",
+                ),
+            )
             logger.exception("judge failed", extra={"task_id": task.id})
             raise
 
@@ -202,11 +331,40 @@ class RuntimeEngine:
         result = state.get("latest_result")
         try:
             logger.info("judge async started", extra={"task_id": task.id})
+            self._publish_signal(
+                state,
+                task_id=task.id,
+                signal_type=ProgressSignalType.PROGRESS,
+                payload=ProgressSignalPayload(status="judge_started"),
+            )
             verdict = await self.judge.ainvoke({"task": task, "result": result})
             state["latest_verdict"] = self._coerce_verdict(verdict)
+            self._publish_signal(
+                state,
+                task_id=task.id,
+                signal_type=ProgressSignalType.PROGRESS,
+                payload=ProgressSignalPayload(
+                    status="judge_completed",
+                    data={
+                        "verdict": state["latest_verdict"].verdict,
+                        "recommendation": state["latest_verdict"].recommendation,
+                        "confidence": state["latest_verdict"].overall_confidence,
+                    },
+                ),
+            )
             logger.info("judge async completed", extra={"task_id": task.id})
             return state
         except Exception:
+            self._publish_signal(
+                state,
+                task_id=task.id,
+                signal_type=ProgressSignalType.ERROR,
+                payload=ProgressSignalPayload(
+                    status="judge_failed",
+                    error_type="judge_error",
+                    detail=f"Judge failed for task {task.id}",
+                ),
+            )
             logger.exception("judge async failed", extra={"task_id": task.id})
             raise
 
@@ -227,6 +385,19 @@ class RuntimeEngine:
                 results[result.task_id] = result
                 logger.info("task result recorded", extra={"task_id": result.task_id})
 
+            self._publish_signal(
+                state,
+                task_id=verdict.task_id,
+                signal_type=ProgressSignalType.PROGRESS,
+                payload=ProgressSignalPayload(
+                    status="verdict_applied",
+                    data={
+                        "verdict": verdict.verdict,
+                        "recommendation": verdict.recommendation,
+                        "plan_status": tracker.state.status,
+                    },
+                ),
+            )
             state["current_task_id"] = None
             state["latest_result"] = None
             state["latest_verdict"] = None
@@ -235,6 +406,16 @@ class RuntimeEngine:
             logger.exception(
                 "apply verdict failed",
                 extra={"task_id": verdict.task_id, "recommendation": verdict.recommendation},
+            )
+            self._publish_signal(
+                state,
+                task_id=verdict.task_id,
+                signal_type=ProgressSignalType.ERROR,
+                payload=ProgressSignalPayload(
+                    status="apply_verdict_failed",
+                    error_type="verdict_application_error",
+                    detail=f"Could not apply verdict for task {verdict.task_id}",
+                ),
             )
             raise
 
@@ -270,3 +451,36 @@ class RuntimeEngine:
         if isinstance(value, JudgeVerdict):
             return value
         return JudgeVerdict(**value)
+
+    def _publish_signal(
+        self,
+        state: RuntimeGraphState,
+        *,
+        task_id: str,
+        signal_type: ProgressSignalType,
+        payload: ProgressSignalPayload,
+    ) -> None:
+        signal = ProgressSignal(task_id=task_id, signal_type=signal_type, payload=payload)
+        judgments = self.progress_bus.publish(signal)
+        logger.info(
+            "progress signal published",
+            extra={
+                "task_id": task_id,
+                "signal_type": signal_type,
+                "judgment_count": len(judgments),
+            },
+        )
+
+        for judgment in judgments:
+            if isinstance(judgment, ProcessJudgment):
+                state.setdefault("process_judgments", []).append(judgment)
+                logger.info(
+                    "process judgment recorded",
+                    extra={"task_id": judgment.task_id, "assessment": judgment.assessment},
+                )
+            elif isinstance(judgment, ObserverJudgment):
+                state.setdefault("observer_judgments", []).append(judgment)
+                logger.info(
+                    "observer judgment recorded",
+                    extra={"health": judgment.health},
+                )
