@@ -5,6 +5,7 @@ from typing import Any, NotRequired, TypedDict
 from langchain_core.runnables import Runnable
 from langgraph.graph import END, StateGraph
 
+from deep_agents.instrumentation import get_logger
 from deep_agents.models import (
     ExecutionPlan,
     JudgeVerdict,
@@ -17,7 +18,6 @@ from deep_agents.models import (
     ProgressSignalType,
     TaskCard,
 )
-from deep_agents.observability import get_logger
 from deep_agents.runtime.observability import ProgressSignalBus
 from deep_agents.runtime.plan_tracker import PlanTracker
 from deep_agents.runtime.results import TaskRunResult

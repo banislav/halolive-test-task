@@ -3,7 +3,7 @@ from __future__ import annotations
 from langchain_core.language_models import BaseChatModel
 
 from deep_agents.config import DeepAgentsSettings, load_env
-from deep_agents.observability import get_logger
+from deep_agents.instrumentation import get_logger
 
 logger = get_logger(__name__)
 

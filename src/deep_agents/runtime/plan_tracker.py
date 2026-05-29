@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from deep_agents.instrumentation import get_logger
 from deep_agents.models import (
     ExecutionPlan,
     JudgeRecommendation,
@@ -9,7 +10,6 @@ from deep_agents.models import (
     PlanStatus,
     TaskStatus,
 )
-from deep_agents.observability import get_logger
 from deep_agents.runtime.dispatcher import Dispatcher
 
 logger = get_logger(__name__)
