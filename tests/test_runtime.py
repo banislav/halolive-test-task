@@ -5,11 +5,14 @@ from langchain_core.runnables import RunnableLambda
 from deep_agents.models import (
     AgentAssignment,
     AgentKind,
+    DiscoveryPlan,
     ExecutionPlan,
+    Gate,
     GateDecision,
     GateJudgment,
     JudgeRecommendation,
     JudgeVerdict,
+    Milestone,
     Objective,
     ObserverHealth,
     ObserverJudgment,
@@ -20,6 +23,7 @@ from deep_agents.models import (
     ProcessJudgment,
     PromptQueueItem,
     RuntimeCommandType,
+    Task,
     TaskCard,
     TaskStatus,
     Wave,
@@ -55,6 +59,29 @@ def build_execution_plan() -> ExecutionPlan:
                 assigned_to=assignment,
             ),
         ],
+    )
+
+
+def build_plan_state_with_gate(
+    *,
+    checkpoint_ids: list[str] | None = None,
+) -> PlanState:
+    objective = Objective(raw="Test plan")
+    return PlanState(
+        objective=objective,
+        discovery_plan=DiscoveryPlan(
+            objective=objective,
+            milestones=[
+                Milestone(
+                    id="M1",
+                    name="First milestone",
+                    gates=["G1"],
+                    tasks=[Task(id="T1", name="First task")],
+                )
+            ],
+            gates=[Gate(id="G1", condition="First milestone task is complete")],
+        ),
+        checkpoint_ids=checkpoint_ids or [],
     )
 
 
@@ -379,6 +406,164 @@ def test_runtime_engine_runs_dependent_tasks_to_completion() -> None:
         "T2": "completed",
     }
     assert list(final_state["results"]) == ["T1", "T2"]
+
+
+def test_runtime_engine_evaluates_completed_milestone_checkpoint_gate() -> None:
+    captured_payloads: list[dict[str, object]] = []
+
+    def run_task(task: TaskCard) -> TaskRunResult:
+        return TaskRunResult(task_id=task.id, output={"message": f"ran {task.id}"})
+
+    def judge_task(payload: dict[str, object]) -> JudgeVerdict:
+        result = payload["result"]
+        assert isinstance(result, TaskRunResult)
+        return JudgeVerdict(
+            task_id=result.task_id,
+            verdict="pass",
+            overall_confidence=1.0,
+            recommendation=JudgeRecommendation.ADVANCE,
+        )
+
+    def judge_gate(payload: dict[str, object]) -> GateJudgment:
+        captured_payloads.append(payload)
+        return GateJudgment(
+            gate_id="G1",
+            milestone_id="M1",
+            decision=GateDecision.HOLD,
+            overall_confidence=0.8,
+            reasoning="Gate should hold for review.",
+        )
+
+    engine = RuntimeEngine(
+        worker=RunnableLambda(run_task),
+        judge=RunnableLambda(judge_task),
+        checkpoint_judge=RunnableLambda(judge_gate),
+    )
+
+    final_state = engine.invoke(build_execution_plan(), build_plan_state_with_gate())
+
+    assert len(captured_payloads) == 1
+    assert captured_payloads[0]["results"]["T1"].output == {"message": "ran T1"}
+    assert final_state["gate_judgments"][0].decision == GateDecision.HOLD
+    assert final_state["plan_state"].checkpoint_ids == ["G1"]
+    assert any(
+        command.type == RuntimeCommandType.HOLD_GATE
+        for command in final_state["runtime_commands"]
+    )
+    assert final_state["plan_state"].status == PlanStatus.COMPLETED
+
+
+def test_runtime_engine_records_checkpoint_gate_command_decisions() -> None:
+    expected_commands = {
+        GateDecision.HOLD: RuntimeCommandType.HOLD_GATE,
+        GateDecision.REJECT: RuntimeCommandType.REQUEST_REPLAN,
+        GateDecision.ESCALATE: RuntimeCommandType.ESCALATE_HITL,
+    }
+
+    def run_task(task: TaskCard) -> TaskRunResult:
+        return TaskRunResult(task_id=task.id, output={"message": f"ran {task.id}"})
+
+    def judge_task(payload: dict[str, object]) -> JudgeVerdict:
+        result = payload["result"]
+        assert isinstance(result, TaskRunResult)
+        return JudgeVerdict(
+            task_id=result.task_id,
+            verdict="pass",
+            overall_confidence=1.0,
+            recommendation=JudgeRecommendation.ADVANCE,
+        )
+
+    for decision, command_type in expected_commands.items():
+        engine = RuntimeEngine(
+            worker=RunnableLambda(run_task),
+            judge=RunnableLambda(judge_task),
+            checkpoint_judge=RunnableLambda(
+                lambda _, decision=decision: GateJudgment(
+                    gate_id="G1",
+                    milestone_id="M1",
+                    decision=decision,
+                    overall_confidence=0.8,
+                    reasoning=f"Gate decision: {decision}",
+                )
+            ),
+        )
+
+        final_state = engine.invoke(build_execution_plan(), build_plan_state_with_gate())
+
+        assert any(command.type == command_type for command in final_state["runtime_commands"])
+
+
+def test_runtime_engine_skips_already_checkpointed_gates() -> None:
+    def run_task(task: TaskCard) -> TaskRunResult:
+        return TaskRunResult(task_id=task.id, output={"message": f"ran {task.id}"})
+
+    def judge_task(payload: dict[str, object]) -> JudgeVerdict:
+        result = payload["result"]
+        assert isinstance(result, TaskRunResult)
+        return JudgeVerdict(
+            task_id=result.task_id,
+            verdict="pass",
+            overall_confidence=1.0,
+            recommendation=JudgeRecommendation.ADVANCE,
+        )
+
+    def judge_gate(_: dict[str, object]) -> GateJudgment:
+        raise AssertionError("checkpoint judge should not run")
+
+    engine = RuntimeEngine(
+        worker=RunnableLambda(run_task),
+        judge=RunnableLambda(judge_task),
+        checkpoint_judge=RunnableLambda(judge_gate),
+    )
+
+    final_state = engine.invoke(
+        build_execution_plan(),
+        build_plan_state_with_gate(checkpoint_ids=["G1"]),
+    )
+
+    assert final_state["gate_judgments"] == []
+    assert final_state["plan_state"].checkpoint_ids == ["G1"]
+
+
+def test_runtime_engine_skips_checkpoint_gates_without_discovery_plan_or_judge() -> None:
+    def run_task(task: TaskCard) -> TaskRunResult:
+        return TaskRunResult(task_id=task.id, output={"message": f"ran {task.id}"})
+
+    def judge_task(payload: dict[str, object]) -> JudgeVerdict:
+        result = payload["result"]
+        assert isinstance(result, TaskRunResult)
+        return JudgeVerdict(
+            task_id=result.task_id,
+            verdict="pass",
+            overall_confidence=1.0,
+            recommendation=JudgeRecommendation.ADVANCE,
+        )
+
+    def judge_gate(_: dict[str, object]) -> GateJudgment:
+        raise AssertionError("checkpoint judge should not run")
+
+    no_discovery_engine = RuntimeEngine(
+        worker=RunnableLambda(run_task),
+        judge=RunnableLambda(judge_task),
+        checkpoint_judge=RunnableLambda(judge_gate),
+    )
+    no_checkpoint_judge_engine = RuntimeEngine(
+        worker=RunnableLambda(run_task),
+        judge=RunnableLambda(judge_task),
+    )
+
+    no_discovery_state = no_discovery_engine.invoke(
+        build_execution_plan(),
+        PlanState(objective=Objective(raw="Test plan")),
+    )
+    no_judge_state = no_checkpoint_judge_engine.invoke(
+        build_execution_plan(),
+        build_plan_state_with_gate(),
+    )
+
+    assert no_discovery_state["gate_judgments"] == []
+    assert no_judge_state["gate_judgments"] == []
+    assert no_judge_state["plan_state"].checkpoint_ids == []
 
 
 def test_runtime_engine_logs_worker_errors(caplog) -> None:

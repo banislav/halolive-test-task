@@ -8,7 +8,10 @@ from langgraph.graph import END, StateGraph
 from deep_agents.instrumentation import get_logger
 from deep_agents.models import (
     ExecutionPlan,
+    Gate,
+    GateJudgment,
     JudgeVerdict,
+    Milestone,
     ObserverJudgment,
     PlanState,
     PlanStatus,
@@ -36,6 +39,7 @@ class RuntimeGraphState(TypedDict):
     results: NotRequired[dict[str, TaskRunResult]]
     process_judgments: NotRequired[list[ProcessJudgment]]
     observer_judgments: NotRequired[list[ObserverJudgment]]
+    gate_judgments: NotRequired[list[GateJudgment]]
     runtime_commands: NotRequired[list[RuntimeCommand]]
 
 
@@ -46,12 +50,14 @@ class RuntimeEngine:
         *,
         worker: Runnable[TaskCard, TaskRunResult | dict[str, Any]],
         judge: Runnable[dict[str, Any], JudgeVerdict | dict[str, Any]],
+        checkpoint_judge: Runnable[dict[str, Any], GateJudgment | dict[str, Any]] | None = None,
         progress_bus: ProgressSignalBus | None = None,
         recursion_limit: int = 100,
     ) -> None:
         """Create an engine from LangChain runnables for task work and judgment."""
         self.worker = worker
         self.judge = judge
+        self.checkpoint_judge = checkpoint_judge
         self.progress_bus = progress_bus or ProgressSignalBus()
         self.recursion_limit = recursion_limit
         self.graph = self._build_graph()
@@ -71,6 +77,7 @@ class RuntimeEngine:
             "results": {},
             "process_judgments": [],
             "observer_judgments": [],
+            "gate_judgments": [],
             "runtime_commands": [],
         }
         try:
@@ -112,6 +119,7 @@ class RuntimeEngine:
             "results": {},
             "process_judgments": [],
             "observer_judgments": [],
+            "gate_judgments": [],
             "runtime_commands": [],
         }
         try:
@@ -389,6 +397,8 @@ class RuntimeEngine:
                 results[result.task_id] = result
                 logger.info("task result recorded", extra={"task_id": result.task_id})
 
+            self._evaluate_checkpoint_gates(state, tracker)
+
             self._publish_signal(
                 state,
                 task_id=verdict.task_id,
@@ -455,6 +465,90 @@ class RuntimeEngine:
         if isinstance(value, JudgeVerdict):
             return value
         return JudgeVerdict(**value)
+
+    def _coerce_gate_judgment(self, value: GateJudgment | dict[str, Any]) -> GateJudgment:
+        if isinstance(value, GateJudgment):
+            return value
+        return GateJudgment(**value)
+
+    def _evaluate_checkpoint_gates(
+        self,
+        state: RuntimeGraphState,
+        tracker: PlanTracker,
+    ) -> None:
+        if self.checkpoint_judge is None:
+            return
+
+        discovery_plan = tracker.state.discovery_plan
+        if discovery_plan is None:
+            return
+
+        gate_index = {gate.id: gate for gate in discovery_plan.gates}
+        for milestone in discovery_plan.milestones:
+            if not milestone.gates or not self._milestone_completed(tracker, milestone):
+                continue
+
+            for gate_id in milestone.gates:
+                if gate_id in tracker.state.checkpoint_ids:
+                    continue
+                gate = gate_index.get(gate_id)
+                if gate is None:
+                    logger.warning(
+                        "milestone references unknown gate",
+                        extra={"milestone_id": milestone.id, "gate_id": gate_id},
+                    )
+                    continue
+                self._evaluate_checkpoint_gate(state, tracker, gate, milestone)
+
+    def _evaluate_checkpoint_gate(
+        self,
+        state: RuntimeGraphState,
+        tracker: PlanTracker,
+        gate: Gate,
+        milestone: Milestone,
+    ) -> None:
+        if self.checkpoint_judge is None:
+            return
+
+        result = self.checkpoint_judge.invoke(
+            {
+                "gate": gate,
+                "milestone": milestone,
+                "plan_state": tracker.state,
+                "execution_plan": state["execution_plan"],
+                "results": state.get("results", {}),
+            }
+        )
+        judgment = self._coerce_gate_judgment(result)
+        state.setdefault("gate_judgments", []).append(judgment)
+        commands = tracker.apply_gate_judgment(judgment)
+        if commands:
+            state.setdefault("runtime_commands", []).extend(commands)
+            logger.info(
+                "checkpoint gate commands recorded",
+                extra={
+                    "gate_id": gate.id,
+                    "command_count": len(commands),
+                    "command_types": [command.type for command in commands],
+                },
+            )
+        tracker.state.checkpoint_ids.append(gate.id)
+        logger.info(
+            "checkpoint gate evaluated",
+            extra={
+                "gate_id": gate.id,
+                "milestone_id": milestone.id,
+                "decision": judgment.decision,
+            },
+        )
+
+    def _milestone_completed(self, tracker: PlanTracker, milestone: Milestone) -> bool:
+        task_ids = [task.id for task in milestone.tasks]
+        if not task_ids:
+            return False
+        return all(
+            tracker.state.task_statuses.get(task_id) == "completed" for task_id in task_ids
+        )
 
     def _publish_signal(
         self,

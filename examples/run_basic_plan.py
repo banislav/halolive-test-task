@@ -6,6 +6,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from deep_agents.config import DeepAgentsSettings
+from deep_agents.instrumentation import configure_logging
 from deep_agents.langchain import build_task_completion_judge, build_task_worker
 from deep_agents.models import (
     AcceptanceCriterion,
@@ -19,7 +20,6 @@ from deep_agents.models import (
     TaskCard,
     Wave,
 )
-from deep_agents.observability import configure_logging
 from deep_agents.runtime import RuntimeEngine
 from deep_agents.skills import SkillLoader, SkillRegistry
 
