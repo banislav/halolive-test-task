@@ -81,3 +81,16 @@ class ProcessJudgment(DeepAgentsModel):
     assessment: ProcessAssessment
     reasoning: str
     actions: list[ProcessAction] = Field(default_factory=list)
+
+
+class ObserverHealth(StrEnum):
+    HEALTHY = "healthy"
+    DEGRADED = "degraded"
+    STUCK = "stuck"
+    DIVERGING = "diverging"
+
+
+class ObserverJudgment(DeepAgentsModel):
+    health: ObserverHealth
+    reasoning: str
+    actions: list[ProcessAction] = Field(default_factory=list)
