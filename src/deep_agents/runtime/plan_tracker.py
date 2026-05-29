@@ -6,8 +6,15 @@ from deep_agents.models import (
     JudgeRecommendation,
     JudgeVerdict,
     JudgeVerdictValue,
+    ObserverHealth,
+    ObserverJudgment,
     PlanState,
     PlanStatus,
+    ProcessAction,
+    ProcessAssessment,
+    ProcessJudgment,
+    RuntimeCommand,
+    RuntimeCommandType,
     TaskStatus,
 )
 from deep_agents.runtime.dispatcher import Dispatcher
@@ -179,6 +186,107 @@ class PlanTracker:
         )
         return []
 
+    def apply_process_judgment(self, judgment: ProcessJudgment) -> list[RuntimeCommand]:
+        """Translate an in-flight process judgment into plan state and runtime commands."""
+        self._ensure_known_task(judgment.task_id)
+        commands: list[RuntimeCommand] = []
+        actions = {action.type: action for action in judgment.actions}
+
+        if judgment.assessment == ProcessAssessment.NEEDS_MORE_TIME:
+            commands.append(
+                self._command_from_action(
+                    RuntimeCommandType.ADJUST_TIMEOUT,
+                    judgment,
+                    actions.get(RuntimeCommandType.ADJUST_TIMEOUT),
+                )
+            )
+
+        if self._has_action(actions, RuntimeCommandType.MARK_EARLY_COMPLETE):
+            ready_ids = self.apply_task_completion(judgment.task_id)
+            commands.append(
+                RuntimeCommand(
+                    type=RuntimeCommandType.MARK_EARLY_COMPLETE,
+                    task_id=judgment.task_id,
+                    reason=judgment.reasoning,
+                    payload={"ready_task_ids": ready_ids},
+                    source="process_judge",
+                )
+            )
+            return commands
+
+        if judgment.assessment == ProcessAssessment.EARLY_TERMINATE:
+            commands.append(
+                self._command_from_action(
+                    RuntimeCommandType.TERMINATE_TASK,
+                    judgment,
+                    actions.get(RuntimeCommandType.TERMINATE_TASK),
+                )
+            )
+            commands.append(
+                RuntimeCommand(
+                    type=RuntimeCommandType.REQUEST_REPLAN,
+                    task_id=judgment.task_id,
+                    reason=judgment.reasoning,
+                    payload={"trigger": "early_terminate"},
+                    source="process_judge",
+                )
+            )
+
+        if judgment.assessment == ProcessAssessment.ESCALATE_HITL:
+            commands.append(
+                self._command_from_action(
+                    RuntimeCommandType.ESCALATE_HITL,
+                    judgment,
+                    actions.get(RuntimeCommandType.ESCALATE_HITL),
+                )
+            )
+
+        return commands
+
+    def apply_observer_judgment(
+        self,
+        judgment: ObserverJudgment,
+        *,
+        task_id: str | None = None,
+    ) -> list[RuntimeCommand]:
+        """Translate runtime-wide observer health judgments into runtime commands."""
+        if judgment.health == ObserverHealth.HEALTHY:
+            return []
+
+        if judgment.health == ObserverHealth.DEGRADED:
+            return [
+                RuntimeCommand(
+                    type=RuntimeCommandType.ESCALATE_HITL,
+                    reason=judgment.reasoning,
+                    payload={"health": judgment.health},
+                    source="observer_judge",
+                )
+            ]
+
+        if judgment.health == ObserverHealth.STUCK:
+            return [
+                RuntimeCommand(
+                    type=RuntimeCommandType.PAUSE_TASK,
+                    task_id=task_id,
+                    reason=judgment.reasoning,
+                    payload={"health": judgment.health},
+                    source="observer_judge",
+                )
+            ]
+
+        if judgment.health == ObserverHealth.DIVERGING:
+            return [
+                RuntimeCommand(
+                    type=RuntimeCommandType.REQUEST_REPLAN,
+                    task_id=task_id,
+                    reason=judgment.reasoning,
+                    payload={"health": judgment.health},
+                    source="observer_judge",
+                )
+            ]
+
+        return []
+
     def pause_all_running(self) -> list[str]:
         """Pause all running tasks and return the task ids that were paused."""
         paused: list[str] = []
@@ -198,6 +306,27 @@ class PlanTracker:
             self.state.status = PlanStatus.PAUSED
             self._log_plan_change(previous_plan_status, PlanStatus.PAUSED, "pause_all_running")
         return paused
+
+    def _command_from_action(
+        self,
+        command_type: RuntimeCommandType,
+        judgment: ProcessJudgment,
+        action: ProcessAction | None,
+    ) -> RuntimeCommand:
+        return RuntimeCommand(
+            type=command_type,
+            task_id=judgment.task_id,
+            reason=judgment.reasoning,
+            payload={"value": action.value} if action else {},
+            source="process_judge",
+        )
+
+    def _has_action(
+        self,
+        actions: dict[str, ProcessAction],
+        command_type: RuntimeCommandType,
+    ) -> bool:
+        return command_type in actions
 
     def _all_tasks_completed(self) -> bool:
         """Return whether every tracked task is complete."""

@@ -9,9 +9,15 @@ from deep_agents.models import (
     JudgeRecommendation,
     JudgeVerdict,
     Objective,
+    ObserverHealth,
+    ObserverJudgment,
     PlanState,
     PlanStatus,
+    ProcessAction,
+    ProcessAssessment,
+    ProcessJudgment,
     PromptQueueItem,
+    RuntimeCommandType,
     TaskCard,
     TaskStatus,
     Wave,
@@ -163,6 +169,113 @@ def test_plan_tracker_marks_block_as_paused_refining() -> None:
     assert ready_ids == []
     assert tracker.state.status == "refining"
     assert tracker.state.task_statuses["T1"] == "paused"
+
+
+def test_plan_tracker_converts_needs_more_time_judgment_to_timeout_command() -> None:
+    plan = build_execution_plan()
+    tracker = PlanTracker(PlanState(objective=Objective(raw="Test plan")), plan)
+
+    commands = tracker.apply_process_judgment(
+        ProcessJudgment(
+            task_id="T1",
+            assessment=ProcessAssessment.NEEDS_MORE_TIME,
+            reasoning="Task is close to timeout.",
+            actions=[ProcessAction(type="adjust_timeout", value=180)],
+        )
+    )
+
+    assert [command.type for command in commands] == [RuntimeCommandType.ADJUST_TIMEOUT]
+    assert commands[0].payload == {"value": 180}
+    assert tracker.state.task_statuses["T1"] == TaskStatus.READY
+
+
+def test_plan_tracker_applies_early_complete_judgment_and_unblocks_dependents() -> None:
+    plan = build_execution_plan()
+    tracker = PlanTracker(PlanState(objective=Objective(raw="Test plan")), plan)
+
+    commands = tracker.apply_process_judgment(
+        ProcessJudgment(
+            task_id="T1",
+            assessment=ProcessAssessment.HEALTHY,
+            reasoning="Finding satisfies acceptance criteria.",
+            actions=[ProcessAction(type="mark_early_complete", value=True)],
+        )
+    )
+
+    assert [command.type for command in commands] == [RuntimeCommandType.MARK_EARLY_COMPLETE]
+    assert commands[0].payload == {"ready_task_ids": ["T2"]}
+    assert tracker.state.task_statuses["T1"] == TaskStatus.COMPLETED
+    assert tracker.state.task_statuses["T2"] == TaskStatus.READY
+
+
+def test_plan_tracker_terminates_low_relevance_judgment_and_requests_replan() -> None:
+    plan = build_execution_plan()
+    tracker = PlanTracker(PlanState(objective=Objective(raw="Test plan")), plan)
+
+    commands = tracker.apply_process_judgment(
+        ProcessJudgment(
+            task_id="T1",
+            assessment=ProcessAssessment.EARLY_TERMINATE,
+            reasoning="Finding is off track.",
+            actions=[ProcessAction(type="terminate_task", value="low_relevance")],
+        )
+    )
+
+    assert [command.type for command in commands] == [
+        RuntimeCommandType.TERMINATE_TASK,
+        RuntimeCommandType.REQUEST_REPLAN,
+    ]
+    assert tracker.state.task_statuses["T1"] == TaskStatus.READY
+    assert tracker.state.status == PlanStatus.INITIALIZING
+
+
+def test_plan_tracker_pauses_on_hitl_process_judgment() -> None:
+    plan = build_execution_plan()
+    tracker = PlanTracker(PlanState(objective=Objective(raw="Test plan")), plan)
+
+    commands = tracker.apply_process_judgment(
+        ProcessJudgment(
+            task_id="T1",
+            assessment=ProcessAssessment.ESCALATE_HITL,
+            reasoning="Task needs user input.",
+            actions=[ProcessAction(type="escalate_hitl", value="missing credential")],
+        )
+    )
+
+    assert [command.type for command in commands] == [RuntimeCommandType.ESCALATE_HITL]
+    assert tracker.state.task_statuses["T1"] == TaskStatus.READY
+    assert tracker.state.status == PlanStatus.INITIALIZING
+
+
+def test_plan_tracker_converts_observer_judgments_to_runtime_commands() -> None:
+    plan = build_execution_plan()
+    tracker = PlanTracker(PlanState(objective=Objective(raw="Test plan")), plan)
+
+    degraded = tracker.apply_observer_judgment(
+        ObserverJudgment(
+            health=ObserverHealth.DEGRADED,
+            reasoning="Repeated errors observed.",
+        )
+    )
+    stuck = tracker.apply_observer_judgment(
+        ObserverJudgment(
+            health=ObserverHealth.STUCK,
+            reasoning="No heartbeat.",
+        ),
+        task_id="T1",
+    )
+    diverging = tracker.apply_observer_judgment(
+        ObserverJudgment(
+            health=ObserverHealth.DIVERGING,
+            reasoning="Runtime is off objective.",
+        )
+    )
+
+    assert [command.type for command in degraded] == [RuntimeCommandType.ESCALATE_HITL]
+    assert [command.type for command in stuck] == [RuntimeCommandType.PAUSE_TASK]
+    assert [command.type for command in diverging] == [RuntimeCommandType.REQUEST_REPLAN]
+    assert tracker.state.task_statuses["T1"] == TaskStatus.READY
+    assert tracker.state.status == PlanStatus.INITIALIZING
 
 
 def test_prompt_queue_places_lifo_interrupts_first() -> None:
