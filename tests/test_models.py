@@ -9,6 +9,8 @@ from deep_agents.models import (
     DiscoveryPlan,
     ExecutionPlan,
     ExecutionPlannerInput,
+    GateDecision,
+    GateJudgment,
     JudgeRecommendation,
     JudgeVerdict,
     Milestone,
@@ -254,3 +256,17 @@ def test_judge_verdict_accepts_block_recommendation() -> None:
     )
 
     assert verdict.recommendation == "block"
+
+
+def test_gate_judgment_matches_checkpoint_judge_schema() -> None:
+    judgment = GateJudgment(
+        gate_id="G1",
+        milestone_id="M1",
+        decision=GateDecision.OPEN,
+        criteria_results=["All M1 tasks pass acceptance criteria: Met"],
+        overall_confidence=0.91,
+        reasoning="All milestone tasks passed their task completion judges.",
+    )
+
+    assert judgment.decision == "open"
+    assert judgment.criteria_results[0].met is True

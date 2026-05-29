@@ -23,6 +23,13 @@ class JudgeVerdictValue(StrEnum):
     PARTIAL = "partial"
 
 
+class GateDecision(StrEnum):
+    OPEN = "open"
+    HOLD = "hold"
+    REJECT = "reject"
+    ESCALATE = "escalate"
+
+
 class CriteriaResult(DeepAgentsModel):
     criterion: str
     met: bool
@@ -35,6 +42,31 @@ class JudgeVerdict(DeepAgentsModel):
     criteria_results: list[CriteriaResult] = Field(default_factory=list)
     overall_confidence: float = Field(ge=0, le=1)
     recommendation: JudgeRecommendation
+
+    @field_validator("criteria_results", mode="before")
+    @classmethod
+    def normalize_criteria_results(cls, value: Any) -> Any:
+        """Accept provider responses that return criteria results as strings."""
+        if not isinstance(value, list):
+            return value
+
+        normalized: list[Any] = []
+        for item in value:
+            if isinstance(item, str):
+                normalized.append(_criteria_result_from_text(item))
+            else:
+                normalized.append(item)
+        return normalized
+
+
+class GateJudgment(DeepAgentsModel):
+    gate_id: str
+    milestone_id: str | None = None
+    decision: GateDecision
+    criteria_results: list[CriteriaResult] = Field(default_factory=list)
+    overall_confidence: float = Field(ge=0, le=1)
+    reasoning: str
+    actions: list[ProcessAction] = Field(default_factory=list)
 
     @field_validator("criteria_results", mode="before")
     @classmethod

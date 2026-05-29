@@ -5,6 +5,8 @@ from langchain_core.runnables import RunnableLambda
 
 from deep_agents.config import DeepAgentsSettings
 from deep_agents.langchain import (
+    build_checkpoint_judge,
+    build_checkpoint_judge_messages,
     build_judge_messages,
     build_task_completion_judge,
     build_task_worker,
@@ -16,11 +18,18 @@ from deep_agents.models import (
     AcceptanceCriterion,
     AgentAssignment,
     AgentKind,
+    ExecutionPlan,
+    Gate,
+    GateDecision,
+    GateJudgment,
     JudgeRecommendation,
     JudgeVerdict,
+    Objective,
+    PlanState,
     SkillAssignment,
     SkillDefinition,
     TaskCard,
+    Wave,
 )
 from deep_agents.runtime import TaskRunResult
 from deep_agents.skills import SkillLoader, SkillRegistry
@@ -49,6 +58,15 @@ def build_task_card() -> TaskCard:
         acceptance_criteria=[
             AcceptanceCriterion(description="Output includes a concise summary")
         ],
+    )
+
+
+def build_execution_plan() -> ExecutionPlan:
+    return ExecutionPlan(
+        id="EP1",
+        objective="Test plan",
+        waves=[Wave(index=0, task_ids=["T1"])],
+        task_cards=[build_task_card()],
     )
 
 
@@ -82,6 +100,26 @@ def test_judge_prompt_includes_task_result() -> None:
     content = _joined_message_content(messages)
     assert "JSON" in content
     assert "Task result:" in content
+    assert '"summary": "Done"' in content
+
+
+def test_checkpoint_judge_prompt_includes_gate_and_runtime_context() -> None:
+    messages = build_checkpoint_judge_messages(
+        Gate(
+            id="G1",
+            condition="All milestone tasks pass acceptance criteria",
+            action_on_fail="replan",
+        ),
+        plan_state=PlanState(objective=Objective(raw="Test plan")),
+        execution_plan=build_execution_plan(),
+        results={"T1": TaskRunResult(task_id="T1", output={"summary": "Done"})},
+    )
+
+    content = _joined_message_content(messages)
+    assert "JSON" in content
+    assert "Gate JSON:" in content
+    assert "G1" in content
+    assert "Completed task results JSON:" in content
     assert '"summary": "Done"' in content
 
 
@@ -153,6 +191,31 @@ def test_task_completion_judge_factory_uses_structured_output() -> None:
     assert result == verdict
 
 
+def test_checkpoint_judge_factory_uses_structured_output() -> None:
+    judgment = GateJudgment(
+        gate_id="G1",
+        decision=GateDecision.OPEN,
+        overall_confidence=0.95,
+        reasoning="Gate is satisfied.",
+    )
+    model = StubStructuredChatModel(judgment)
+
+    judge = build_checkpoint_judge(model=model)  # type: ignore[arg-type]
+    result = judge.invoke(
+        {
+            "gate": Gate(id="G1", condition="All tasks pass"),
+            "plan_state": {
+                "objective": {"raw": "Test plan"},
+            },
+            "execution_plan": build_execution_plan(),
+            "results": {"T1": TaskRunResult(task_id="T1", output={"summary": "Done"})},
+        }
+    )
+
+    assert model.requested_schema is GateJudgment
+    assert result == judgment
+
+
 def test_runnable_factories_forward_explicit_settings(monkeypatch) -> None:
     settings = DeepAgentsSettings(provider="openrouter", model="qwen/qwen3.6-flash")
     captured: list[DeepAgentsSettings | None] = []
@@ -189,6 +252,28 @@ def test_judge_factory_forwards_explicit_settings(monkeypatch) -> None:
 
     monkeypatch.setattr(judge_module, "build_chat_model", build_stub_model)
     build_task_completion_judge(settings=settings)
+
+    assert captured == [settings]
+
+
+def test_checkpoint_judge_factory_forwards_explicit_settings(monkeypatch) -> None:
+    settings = DeepAgentsSettings(provider="openrouter", model="qwen/qwen3.6-flash")
+    judgment = GateJudgment(
+        gate_id="G1",
+        decision=GateDecision.OPEN,
+        overall_confidence=0.95,
+        reasoning="Gate is satisfied.",
+    )
+    captured: list[DeepAgentsSettings | None] = []
+
+    def build_stub_model(
+        received_settings: DeepAgentsSettings | None = None,
+    ) -> StubStructuredChatModel:
+        captured.append(received_settings)
+        return StubStructuredChatModel(judgment)
+
+    monkeypatch.setattr(judge_module, "build_chat_model", build_stub_model)
+    build_checkpoint_judge(settings=settings)
 
     assert captured == [settings]
 

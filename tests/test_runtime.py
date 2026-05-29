@@ -6,6 +6,8 @@ from deep_agents.models import (
     AgentAssignment,
     AgentKind,
     ExecutionPlan,
+    GateDecision,
+    GateJudgment,
     JudgeRecommendation,
     JudgeVerdict,
     Objective,
@@ -276,6 +278,50 @@ def test_plan_tracker_converts_observer_judgments_to_runtime_commands() -> None:
     assert [command.type for command in diverging] == [RuntimeCommandType.REQUEST_REPLAN]
     assert tracker.state.task_statuses["T1"] == TaskStatus.READY
     assert tracker.state.status == PlanStatus.INITIALIZING
+
+
+def test_plan_tracker_converts_gate_judgments_to_runtime_commands() -> None:
+    plan = build_execution_plan()
+    tracker = PlanTracker(PlanState(objective=Objective(raw="Test plan")), plan)
+
+    opened = tracker.apply_gate_judgment(
+        GateJudgment(
+            gate_id="G1",
+            decision=GateDecision.OPEN,
+            overall_confidence=0.95,
+            reasoning="Gate is satisfied.",
+        )
+    )
+    held = tracker.apply_gate_judgment(
+        GateJudgment(
+            gate_id="G1",
+            decision=GateDecision.HOLD,
+            overall_confidence=0.6,
+            reasoning="Milestone still has incomplete work.",
+        )
+    )
+    rejected = tracker.apply_gate_judgment(
+        GateJudgment(
+            gate_id="G1",
+            decision=GateDecision.REJECT,
+            overall_confidence=0.8,
+            reasoning="Milestone failed its quality gate.",
+        )
+    )
+    escalated = tracker.apply_gate_judgment(
+        GateJudgment(
+            gate_id="G1",
+            decision=GateDecision.ESCALATE,
+            overall_confidence=0.7,
+            reasoning="Gate needs human approval.",
+        )
+    )
+
+    assert opened == []
+    assert [command.type for command in held] == [RuntimeCommandType.HOLD_GATE]
+    assert [command.type for command in rejected] == [RuntimeCommandType.REQUEST_REPLAN]
+    assert [command.type for command in escalated] == [RuntimeCommandType.ESCALATE_HITL]
+    assert held[0].payload["gate_id"] == "G1"
 
 
 def test_prompt_queue_places_lifo_interrupts_first() -> None:

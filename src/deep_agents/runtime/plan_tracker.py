@@ -3,6 +3,8 @@ from __future__ import annotations
 from deep_agents.instrumentation import get_logger
 from deep_agents.models import (
     ExecutionPlan,
+    GateDecision,
+    GateJudgment,
     JudgeRecommendation,
     JudgeVerdict,
     JudgeVerdictValue,
@@ -287,6 +289,43 @@ class PlanTracker:
 
         return []
 
+    def apply_gate_judgment(self, judgment: GateJudgment) -> list[RuntimeCommand]:
+        """Translate a checkpoint gate judgment into runtime commands."""
+        if judgment.decision == GateDecision.OPEN:
+            return []
+
+        if judgment.decision == GateDecision.HOLD:
+            return [
+                RuntimeCommand(
+                    type=RuntimeCommandType.HOLD_GATE,
+                    reason=judgment.reasoning,
+                    payload=self._gate_payload(judgment),
+                    source="checkpoint_judge",
+                )
+            ]
+
+        if judgment.decision == GateDecision.REJECT:
+            return [
+                RuntimeCommand(
+                    type=RuntimeCommandType.REQUEST_REPLAN,
+                    reason=judgment.reasoning,
+                    payload=self._gate_payload(judgment),
+                    source="checkpoint_judge",
+                )
+            ]
+
+        if judgment.decision == GateDecision.ESCALATE:
+            return [
+                RuntimeCommand(
+                    type=RuntimeCommandType.ESCALATE_HITL,
+                    reason=judgment.reasoning,
+                    payload=self._gate_payload(judgment),
+                    source="checkpoint_judge",
+                )
+            ]
+
+        return []
+
     def pause_all_running(self) -> list[str]:
         """Pause all running tasks and return the task ids that were paused."""
         paused: list[str] = []
@@ -327,6 +366,14 @@ class PlanTracker:
         command_type: RuntimeCommandType,
     ) -> bool:
         return command_type in actions
+
+    def _gate_payload(self, judgment: GateJudgment) -> dict[str, object]:
+        return {
+            "gate_id": judgment.gate_id,
+            "milestone_id": judgment.milestone_id,
+            "decision": judgment.decision,
+            "confidence": judgment.overall_confidence,
+        }
 
     def _all_tasks_completed(self) -> bool:
         """Return whether every tracked task is complete."""

@@ -1,8 +1,18 @@
 from __future__ import annotations
 
+import json
+
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 
-from deep_agents.models import ExecutionPlannerInput, PlannerInput, TaskCard
+from deep_agents.models import (
+    ExecutionPlan,
+    ExecutionPlannerInput,
+    Gate,
+    Milestone,
+    PlannerInput,
+    PlanState,
+    TaskCard,
+)
 from deep_agents.runtime import TaskRunResult
 
 INITIAL_PLANNER_SYSTEM_PROMPT = """You are InitialPlannerAgent.
@@ -30,6 +40,18 @@ Use this JSON shape: {"task_id": "...", "verdict": "pass", "criteria_results":
 Use recommendation "hold" when execution should pause for more information.
 Use recommendation "block" when the task cannot continue because a dependency or required
 input is missing."""
+
+CHECKPOINT_JUDGE_SYSTEM_PROMPT = """You are a read-only checkpoint judge.
+Evaluate whether a milestone gate is ready to open based on plan state, task statuses,
+completed results, and the gate condition.
+Return only valid JSON matching the GateJudgment schema.
+Use this JSON shape: {"gate_id": "...", "milestone_id": "...", "decision": "open",
+"criteria_results": [{"criterion": "...", "met": true, "evidence": "..."}],
+"overall_confidence": 0.0, "reasoning": "...", "actions": []}.
+Use decision "open" when the gate condition is satisfied.
+Use decision "hold" when execution should wait for more information or incomplete work.
+Use decision "reject" when the checkpoint failed and replanning is needed.
+Use decision "escalate" when human input is required."""
 
 
 def build_initial_planner_messages(planner_input: PlannerInput) -> list[BaseMessage]:
@@ -107,6 +129,45 @@ def build_judge_messages(task: TaskCard, result: TaskRunResult) -> list[BaseMess
                     _task_card_text(task),
                     "Task result:",
                     result.model_dump_json(indent=2),
+                ]
+            )
+        ),
+    ]
+
+
+def build_checkpoint_judge_messages(
+    gate: Gate,
+    plan_state: PlanState,
+    execution_plan: ExecutionPlan,
+    *,
+    milestone: Milestone | None = None,
+    results: dict[str, TaskRunResult] | None = None,
+) -> list[BaseMessage]:
+    """Build LangChain messages for judging a milestone checkpoint gate."""
+    serialized_results = {
+        task_id: result.model_dump(mode="json") for task_id, result in (results or {}).items()
+    }
+    return [
+        SystemMessage(content=CHECKPOINT_JUDGE_SYSTEM_PROMPT),
+        HumanMessage(
+            content="\n\n".join(
+                [
+                    "Gate JSON:",
+                    gate.model_dump_json(indent=2),
+                    "Milestone JSON:",
+                    milestone.model_dump_json(indent=2) if milestone else "null",
+                    "Plan state JSON:",
+                    plan_state.model_dump_json(indent=2),
+                    "Execution plan JSON:",
+                    execution_plan.model_dump_json(indent=2),
+                    "Completed task results JSON:",
+                    json.dumps(serialized_results, indent=2),
+                    "Expected JSON top-level shape:",
+                    (
+                        '{"gate_id": "...", "milestone_id": "...", "decision": "open", '
+                        '"criteria_results": [], "overall_confidence": 0.0, '
+                        '"reasoning": "...", "actions": []}'
+                    ),
                 ]
             )
         ),

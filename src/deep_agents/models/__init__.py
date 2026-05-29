@@ -13,6 +13,8 @@ from deep_agents.models.execution import (
 )
 from deep_agents.models.judges import (
     CriteriaResult,
+    GateDecision,
+    GateJudgment,
     JudgeRecommendation,
     JudgeVerdict,
     JudgeVerdictValue,
@@ -66,6 +68,8 @@ __all__ = [
     "ExecutionPlan",
     "ExecutionPlannerInput",
     "Gate",
+    "GateDecision",
+    "GateJudgment",
     "GateType",
     "InterruptPriority",
     "JudgeRecommendation",
