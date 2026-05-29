@@ -38,6 +38,7 @@ from deep_agents.models.planning import (
     TaskStatus,
 )
 from deep_agents.models.prompts import InterruptPriority, PromptCategory, PromptQueueItem
+from deep_agents.models.runtime import RuntimeCommand, RuntimeCommandType
 from deep_agents.models.signals import ProgressSignal, ProgressSignalPayload, ProgressSignalType
 from deep_agents.models.skills import (
     SkillAssignment,
@@ -88,6 +89,8 @@ __all__ = [
     "PromptQueueItem",
     "RetryPolicy",
     "Risk",
+    "RuntimeCommand",
+    "RuntimeCommandType",
     "SkillAssignment",
     "SkillContextCost",
     "SkillDefinition",
