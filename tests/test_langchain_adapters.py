@@ -31,7 +31,7 @@ from deep_agents.models import (
     TaskCard,
     Wave,
 )
-from deep_agents.runtime import TaskRunResult
+from deep_agents.runtime import TaskExecutionContext, TaskRunResult
 from deep_agents.skills import SkillLoader, SkillRegistry
 
 
@@ -89,6 +89,31 @@ def test_worker_prompt_includes_loaded_skill_context() -> None:
     content = _joined_message_content(messages)
     assert "Loaded skills:" in content
     assert "Be concise." in content
+
+
+def test_worker_prompt_includes_assembled_task_context() -> None:
+    context = TaskExecutionContext(
+        task=build_task_card(),
+        objective=Objective(raw="Draft a project summary"),
+        plan_context={"blocked_by": ["T0"]},
+        dependency_results={
+            "T0": {
+                "task_id": "T0",
+                "output": {"notes": "important background"},
+            }
+        },
+        skill_context="Loaded skills:\n- Technical Writing\n  instructions:\n    Be concise.",
+        loaded_skill_ids=["technical_writing"],
+    )
+
+    messages = build_worker_messages(context)
+
+    content = _joined_message_content(messages)
+    assert "Objective:" in content
+    assert "Draft a project summary" in content
+    assert "Direct dependency results JSON:" in content
+    assert "important background" in content
+    assert "Loaded skills:" in content
 
 
 def test_judge_prompt_includes_task_result() -> None:
