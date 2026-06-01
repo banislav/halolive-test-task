@@ -32,7 +32,7 @@ def build_plan() -> ExecutionPlan:
     )
     return ExecutionPlan(
         id="EP-basic",
-        objective="Draft and review a short project summary.",
+        objective="Draft and review a short project summary for building recurrent neural network.",
         waves=[
             Wave(index=0, task_ids=["T1"]),
             Wave(index=1, task_ids=["T2"]),
