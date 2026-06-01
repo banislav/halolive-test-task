@@ -5,9 +5,28 @@ from typing import Any, NotRequired, TypedDict
 from langchain_core.runnables import Runnable
 from langgraph.graph import END, StateGraph
 
-from deep_agents.models import ExecutionPlan, JudgeVerdict, PlanState, PlanStatus, TaskCard
+from deep_agents.instrumentation import get_logger
+from deep_agents.models import (
+    ExecutionPlan,
+    Gate,
+    GateJudgment,
+    JudgeVerdict,
+    Milestone,
+    ObserverJudgment,
+    PlanState,
+    PlanStatus,
+    ProcessJudgment,
+    ProgressSignal,
+    ProgressSignalPayload,
+    ProgressSignalType,
+    RuntimeCommand,
+    TaskCard,
+)
+from deep_agents.runtime.observability import ProgressSignalBus
 from deep_agents.runtime.plan_tracker import PlanTracker
 from deep_agents.runtime.results import TaskRunResult
+
+logger = get_logger(__name__)
 
 
 class RuntimeGraphState(TypedDict):
@@ -18,6 +37,10 @@ class RuntimeGraphState(TypedDict):
     latest_result: NotRequired[TaskRunResult | None]
     latest_verdict: NotRequired[JudgeVerdict | None]
     results: NotRequired[dict[str, TaskRunResult]]
+    process_judgments: NotRequired[list[ProcessJudgment]]
+    observer_judgments: NotRequired[list[ObserverJudgment]]
+    gate_judgments: NotRequired[list[GateJudgment]]
+    runtime_commands: NotRequired[list[RuntimeCommand]]
 
 
 class RuntimeEngine:
@@ -27,16 +50,24 @@ class RuntimeEngine:
         *,
         worker: Runnable[TaskCard, TaskRunResult | dict[str, Any]],
         judge: Runnable[dict[str, Any], JudgeVerdict | dict[str, Any]],
+        checkpoint_judge: Runnable[dict[str, Any], GateJudgment | dict[str, Any]] | None = None,
+        progress_bus: ProgressSignalBus | None = None,
         recursion_limit: int = 100,
     ) -> None:
         """Create an engine from LangChain runnables for task work and judgment."""
         self.worker = worker
         self.judge = judge
+        self.checkpoint_judge = checkpoint_judge
+        self.progress_bus = progress_bus or ProgressSignalBus()
         self.recursion_limit = recursion_limit
         self.graph = self._build_graph()
 
     def invoke(self, execution_plan: ExecutionPlan, plan_state: PlanState) -> RuntimeGraphState:
         """Run the graph synchronously until the plan reaches a terminal state."""
+        logger.info(
+            "runtime engine invoke started",
+            extra={"execution_plan_id": execution_plan.id, "plan_status": plan_state.status},
+        )
         initial_state: RuntimeGraphState = {
             "execution_plan": execution_plan,
             "plan_state": plan_state,
@@ -44,11 +75,30 @@ class RuntimeEngine:
             "latest_result": None,
             "latest_verdict": None,
             "results": {},
+            "process_judgments": [],
+            "observer_judgments": [],
+            "gate_judgments": [],
+            "runtime_commands": [],
         }
-        return self.graph.invoke(
-            initial_state,
-            config={"recursion_limit": self.recursion_limit},
+        try:
+            final_state = self.graph.invoke(
+                initial_state,
+                config={"recursion_limit": self.recursion_limit},
+            )
+        except Exception:
+            logger.exception(
+                "runtime engine invoke failed",
+                extra={"execution_plan_id": execution_plan.id},
+            )
+            raise
+        logger.info(
+            "runtime engine invoke completed",
+            extra={
+                "execution_plan_id": execution_plan.id,
+                "plan_status": final_state["plan_state"].status,
+            },
         )
+        return final_state
 
     async def ainvoke(
         self,
@@ -56,6 +106,10 @@ class RuntimeEngine:
         plan_state: PlanState,
     ) -> RuntimeGraphState:
         """Run the graph asynchronously until the plan reaches a terminal state."""
+        logger.info(
+            "runtime engine async invoke started",
+            extra={"execution_plan_id": execution_plan.id, "plan_status": plan_state.status},
+        )
         initial_state: RuntimeGraphState = {
             "execution_plan": execution_plan,
             "plan_state": plan_state,
@@ -63,11 +117,30 @@ class RuntimeEngine:
             "latest_result": None,
             "latest_verdict": None,
             "results": {},
+            "process_judgments": [],
+            "observer_judgments": [],
+            "gate_judgments": [],
+            "runtime_commands": [],
         }
-        return await self.graph.ainvoke(
-            initial_state,
-            config={"recursion_limit": self.recursion_limit},
+        try:
+            final_state = await self.graph.ainvoke(
+                initial_state,
+                config={"recursion_limit": self.recursion_limit},
+            )
+        except Exception:
+            logger.exception(
+                "runtime engine async invoke failed",
+                extra={"execution_plan_id": execution_plan.id},
+            )
+            raise
+        logger.info(
+            "runtime engine async invoke completed",
+            extra={
+                "execution_plan_id": execution_plan.id,
+                "plan_status": final_state["plan_state"].status,
+            },
         )
+        return final_state
 
     def _build_graph(self) -> Any:
         graph = StateGraph(RuntimeGraphState)
@@ -91,66 +164,274 @@ class RuntimeEngine:
         return graph.compile()
 
     def _dispatch_node(self, state: RuntimeGraphState) -> RuntimeGraphState:
-        tracker = PlanTracker(state["plan_state"], state["execution_plan"])
+        try:
+            tracker = PlanTracker(state["plan_state"], state["execution_plan"])
 
-        if self._is_terminal(tracker.state.status):
-            state["current_task_id"] = None
+            if self._is_terminal(tracker.state.status):
+                state["current_task_id"] = None
+                return state
+
+            ready_ids = tracker.refresh_readiness()
+            if not ready_ids:
+                logger.info(
+                    "no ready tasks available",
+                    extra={"execution_plan_id": state["execution_plan"].id},
+                )
+                state["current_task_id"] = None
+                return state
+
+            task_id = ready_ids[0]
+            tracker.mark_running(task_id)
+            state["current_task_id"] = task_id
+            self._publish_signal(
+                state,
+                task_id=task_id,
+                signal_type=ProgressSignalType.PROGRESS,
+                payload=ProgressSignalPayload(
+                    status="dispatched",
+                    data={
+                        "execution_plan_id": state["execution_plan"].id,
+                        "wave": self._current_task(state).wave,
+                    },
+                ),
+            )
+            logger.info(
+                "task dispatched",
+                extra={"execution_plan_id": state["execution_plan"].id, "task_id": task_id},
+            )
             return state
-
-        ready_ids = tracker.refresh_readiness()
-        if not ready_ids:
-            state["current_task_id"] = None
-            return state
-
-        task_id = ready_ids[0]
-        tracker.mark_running(task_id)
-        state["current_task_id"] = task_id
-        return state
+        except Exception:
+            logger.exception("dispatch node failed")
+            raise
 
     def _worker_node(self, state: RuntimeGraphState) -> RuntimeGraphState:
         task = self._current_task(state)
-        result = self.worker.invoke(task)
-        state["latest_result"] = self._coerce_result(task.id, result)
-        return state
+        try:
+            logger.info("worker started", extra={"task_id": task.id})
+            self._publish_signal(
+                state,
+                task_id=task.id,
+                signal_type=ProgressSignalType.HEARTBEAT,
+                payload=ProgressSignalPayload(status="worker_started"),
+            )
+            result = self.worker.invoke(task)
+            state["latest_result"] = self._coerce_result(task.id, result)
+            self._publish_signal(
+                state,
+                task_id=task.id,
+                signal_type=ProgressSignalType.PROGRESS,
+                payload=ProgressSignalPayload(status="worker_completed", percent_complete=100),
+            )
+            if state["latest_result"].output:
+                self._publish_signal(
+                    state,
+                    task_id=task.id,
+                    signal_type=ProgressSignalType.FINDING,
+                    payload=ProgressSignalPayload(
+                        status="worker_output",
+                        actionable=True,
+                        relevance_score=1.0,
+                        data={"output": state["latest_result"].output},
+                    ),
+                )
+            logger.info("worker completed", extra={"task_id": task.id})
+            return state
+        except Exception:
+            self._publish_signal(
+                state,
+                task_id=task.id,
+                signal_type=ProgressSignalType.ERROR,
+                payload=ProgressSignalPayload(
+                    status="worker_failed",
+                    error_type="worker_error",
+                    detail=f"Worker failed for task {task.id}",
+                ),
+            )
+            logger.exception("worker failed", extra={"task_id": task.id})
+            raise
 
     async def _worker_node_async(self, state: RuntimeGraphState) -> RuntimeGraphState:
         task = self._current_task(state)
-        result = await self.worker.ainvoke(task)
-        state["latest_result"] = self._coerce_result(task.id, result)
-        return state
+        try:
+            logger.info("worker async started", extra={"task_id": task.id})
+            self._publish_signal(
+                state,
+                task_id=task.id,
+                signal_type=ProgressSignalType.HEARTBEAT,
+                payload=ProgressSignalPayload(status="worker_started"),
+            )
+            result = await self.worker.ainvoke(task)
+            state["latest_result"] = self._coerce_result(task.id, result)
+            self._publish_signal(
+                state,
+                task_id=task.id,
+                signal_type=ProgressSignalType.PROGRESS,
+                payload=ProgressSignalPayload(status="worker_completed", percent_complete=100),
+            )
+            if state["latest_result"].output:
+                self._publish_signal(
+                    state,
+                    task_id=task.id,
+                    signal_type=ProgressSignalType.FINDING,
+                    payload=ProgressSignalPayload(
+                        status="worker_output",
+                        actionable=True,
+                        relevance_score=1.0,
+                        data={"output": state["latest_result"].output},
+                    ),
+                )
+            logger.info("worker async completed", extra={"task_id": task.id})
+            return state
+        except Exception:
+            self._publish_signal(
+                state,
+                task_id=task.id,
+                signal_type=ProgressSignalType.ERROR,
+                payload=ProgressSignalPayload(
+                    status="worker_failed",
+                    error_type="worker_error",
+                    detail=f"Worker failed for task {task.id}",
+                ),
+            )
+            logger.exception("worker async failed", extra={"task_id": task.id})
+            raise
 
     def _judge_node(self, state: RuntimeGraphState) -> RuntimeGraphState:
         task = self._current_task(state)
         result = state.get("latest_result")
-        verdict = self.judge.invoke({"task": task, "result": result})
-        state["latest_verdict"] = self._coerce_verdict(verdict)
-        return state
+        try:
+            logger.info("judge started", extra={"task_id": task.id})
+            self._publish_signal(
+                state,
+                task_id=task.id,
+                signal_type=ProgressSignalType.PROGRESS,
+                payload=ProgressSignalPayload(status="judge_started"),
+            )
+            verdict = self.judge.invoke({"task": task, "result": result})
+            state["latest_verdict"] = self._coerce_verdict(verdict)
+            self._publish_signal(
+                state,
+                task_id=task.id,
+                signal_type=ProgressSignalType.PROGRESS,
+                payload=ProgressSignalPayload(
+                    status="judge_completed",
+                    data={
+                        "verdict": state["latest_verdict"].verdict,
+                        "recommendation": state["latest_verdict"].recommendation,
+                        "confidence": state["latest_verdict"].overall_confidence,
+                    },
+                ),
+            )
+            logger.info("judge completed", extra={"task_id": task.id})
+            return state
+        except Exception:
+            self._publish_signal(
+                state,
+                task_id=task.id,
+                signal_type=ProgressSignalType.ERROR,
+                payload=ProgressSignalPayload(
+                    status="judge_failed",
+                    error_type="judge_error",
+                    detail=f"Judge failed for task {task.id}",
+                ),
+            )
+            logger.exception("judge failed", extra={"task_id": task.id})
+            raise
 
     async def _judge_node_async(self, state: RuntimeGraphState) -> RuntimeGraphState:
         task = self._current_task(state)
         result = state.get("latest_result")
-        verdict = await self.judge.ainvoke({"task": task, "result": result})
-        state["latest_verdict"] = self._coerce_verdict(verdict)
-        return state
+        try:
+            logger.info("judge async started", extra={"task_id": task.id})
+            self._publish_signal(
+                state,
+                task_id=task.id,
+                signal_type=ProgressSignalType.PROGRESS,
+                payload=ProgressSignalPayload(status="judge_started"),
+            )
+            verdict = await self.judge.ainvoke({"task": task, "result": result})
+            state["latest_verdict"] = self._coerce_verdict(verdict)
+            self._publish_signal(
+                state,
+                task_id=task.id,
+                signal_type=ProgressSignalType.PROGRESS,
+                payload=ProgressSignalPayload(
+                    status="judge_completed",
+                    data={
+                        "verdict": state["latest_verdict"].verdict,
+                        "recommendation": state["latest_verdict"].recommendation,
+                        "confidence": state["latest_verdict"].overall_confidence,
+                    },
+                ),
+            )
+            logger.info("judge async completed", extra={"task_id": task.id})
+            return state
+        except Exception:
+            self._publish_signal(
+                state,
+                task_id=task.id,
+                signal_type=ProgressSignalType.ERROR,
+                payload=ProgressSignalPayload(
+                    status="judge_failed",
+                    error_type="judge_error",
+                    detail=f"Judge failed for task {task.id}",
+                ),
+            )
+            logger.exception("judge async failed", extra={"task_id": task.id})
+            raise
 
     def _apply_verdict_node(self, state: RuntimeGraphState) -> RuntimeGraphState:
         verdict = state.get("latest_verdict")
         result = state.get("latest_result")
         if verdict is None:
             msg = "cannot apply verdict before judge node runs"
+            logger.error(msg)
             raise RuntimeError(msg)
 
-        tracker = PlanTracker(state["plan_state"], state["execution_plan"])
-        tracker.apply_judge_verdict(verdict)
+        try:
+            tracker = PlanTracker(state["plan_state"], state["execution_plan"])
+            tracker.apply_judge_verdict(verdict)
 
-        if result is not None:
-            results = state.setdefault("results", {})
-            results[result.task_id] = result
+            if result is not None:
+                results = state.setdefault("results", {})
+                results[result.task_id] = result
+                logger.info("task result recorded", extra={"task_id": result.task_id})
 
-        state["current_task_id"] = None
-        state["latest_result"] = None
-        state["latest_verdict"] = None
-        return state
+            self._evaluate_checkpoint_gates(state, tracker)
+
+            self._publish_signal(
+                state,
+                task_id=verdict.task_id,
+                signal_type=ProgressSignalType.PROGRESS,
+                payload=ProgressSignalPayload(
+                    status="verdict_applied",
+                    data={
+                        "verdict": verdict.verdict,
+                        "recommendation": verdict.recommendation,
+                        "plan_status": tracker.state.status,
+                    },
+                ),
+            )
+            state["current_task_id"] = None
+            state["latest_result"] = None
+            state["latest_verdict"] = None
+            return state
+        except Exception:
+            logger.exception(
+                "apply verdict failed",
+                extra={"task_id": verdict.task_id, "recommendation": verdict.recommendation},
+            )
+            self._publish_signal(
+                state,
+                task_id=verdict.task_id,
+                signal_type=ProgressSignalType.ERROR,
+                payload=ProgressSignalPayload(
+                    status="apply_verdict_failed",
+                    error_type="verdict_application_error",
+                    detail=f"Could not apply verdict for task {verdict.task_id}",
+                ),
+            )
+            raise
 
     def _route_after_dispatch(self, state: RuntimeGraphState) -> str:
         if self._is_terminal(state["plan_state"].status):
@@ -163,10 +444,12 @@ class RuntimeEngine:
         task_id = state.get("current_task_id")
         if task_id is None:
             msg = "runtime graph has no current task"
+            logger.error(msg)
             raise RuntimeError(msg)
         tracker = PlanTracker(state["plan_state"], state["execution_plan"])
         if tracker.dispatcher is None:
             msg = "runtime graph has no dispatcher"
+            logger.error(msg)
             raise RuntimeError(msg)
         return tracker.dispatcher.get_task(task_id)
 
@@ -182,3 +465,139 @@ class RuntimeEngine:
         if isinstance(value, JudgeVerdict):
             return value
         return JudgeVerdict(**value)
+
+    def _coerce_gate_judgment(self, value: GateJudgment | dict[str, Any]) -> GateJudgment:
+        if isinstance(value, GateJudgment):
+            return value
+        return GateJudgment(**value)
+
+    def _evaluate_checkpoint_gates(
+        self,
+        state: RuntimeGraphState,
+        tracker: PlanTracker,
+    ) -> None:
+        if self.checkpoint_judge is None:
+            return
+
+        discovery_plan = tracker.state.discovery_plan
+        if discovery_plan is None:
+            return
+
+        gate_index = {gate.id: gate for gate in discovery_plan.gates}
+        for milestone in discovery_plan.milestones:
+            if not milestone.gates or not self._milestone_completed(tracker, milestone):
+                continue
+
+            for gate_id in milestone.gates:
+                if gate_id in tracker.state.checkpoint_ids:
+                    continue
+                gate = gate_index.get(gate_id)
+                if gate is None:
+                    logger.warning(
+                        "milestone references unknown gate",
+                        extra={"milestone_id": milestone.id, "gate_id": gate_id},
+                    )
+                    continue
+                self._evaluate_checkpoint_gate(state, tracker, gate, milestone)
+
+    def _evaluate_checkpoint_gate(
+        self,
+        state: RuntimeGraphState,
+        tracker: PlanTracker,
+        gate: Gate,
+        milestone: Milestone,
+    ) -> None:
+        if self.checkpoint_judge is None:
+            return
+
+        result = self.checkpoint_judge.invoke(
+            {
+                "gate": gate,
+                "milestone": milestone,
+                "plan_state": tracker.state,
+                "execution_plan": state["execution_plan"],
+                "results": state.get("results", {}),
+            }
+        )
+        judgment = self._coerce_gate_judgment(result)
+        state.setdefault("gate_judgments", []).append(judgment)
+        commands = tracker.apply_gate_judgment(judgment)
+        if commands:
+            state.setdefault("runtime_commands", []).extend(commands)
+            logger.info(
+                "checkpoint gate commands recorded",
+                extra={
+                    "gate_id": gate.id,
+                    "command_count": len(commands),
+                    "command_types": [command.type for command in commands],
+                },
+            )
+        tracker.state.checkpoint_ids.append(gate.id)
+        logger.info(
+            "checkpoint gate evaluated",
+            extra={
+                "gate_id": gate.id,
+                "milestone_id": milestone.id,
+                "decision": judgment.decision,
+            },
+        )
+
+    def _milestone_completed(self, tracker: PlanTracker, milestone: Milestone) -> bool:
+        task_ids = [task.id for task in milestone.tasks]
+        if not task_ids:
+            return False
+        return all(
+            tracker.state.task_statuses.get(task_id) == "completed" for task_id in task_ids
+        )
+
+    def _publish_signal(
+        self,
+        state: RuntimeGraphState,
+        *,
+        task_id: str,
+        signal_type: ProgressSignalType,
+        payload: ProgressSignalPayload,
+    ) -> None:
+        signal = ProgressSignal(task_id=task_id, signal_type=signal_type, payload=payload)
+        judgments = self.progress_bus.publish(signal)
+        logger.info(
+            "progress signal published",
+            extra={
+                "task_id": task_id,
+                "signal_type": signal_type,
+                "judgment_count": len(judgments),
+            },
+        )
+
+        for judgment in judgments:
+            tracker = PlanTracker(state["plan_state"], state["execution_plan"])
+            if isinstance(judgment, ProcessJudgment):
+                state.setdefault("process_judgments", []).append(judgment)
+                logger.info(
+                    "process judgment recorded",
+                    extra={"task_id": judgment.task_id, "assessment": judgment.assessment},
+                )
+                commands = tracker.apply_process_judgment(judgment)
+            elif isinstance(judgment, ObserverJudgment):
+                state.setdefault("observer_judgments", []).append(judgment)
+                logger.info(
+                    "observer judgment recorded",
+                    extra={"health": judgment.health},
+                )
+                commands = tracker.apply_observer_judgment(
+                    judgment,
+                    task_id=state.get("current_task_id"),
+                )
+            else:
+                commands = []
+
+            if commands:
+                state.setdefault("runtime_commands", []).extend(commands)
+                logger.info(
+                    "runtime commands recorded",
+                    extra={
+                        "task_id": task_id,
+                        "command_count": len(commands),
+                        "command_types": [command.type for command in commands],
+                    },
+                )

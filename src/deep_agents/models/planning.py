@@ -4,7 +4,7 @@ from enum import StrEnum
 
 from pydantic import Field, model_validator
 
-from deep_agents.models.base import DeepAgentsModel, JsonObject, TimestampedModel
+from deep_agents.models.base import DeepAgentsModel, TimestampedModel
 
 
 class PlanStatus(StrEnum):
@@ -55,6 +55,11 @@ class Risk(DeepAgentsModel):
     severity: str = "medium"
 
 
+class Clarification(DeepAgentsModel):
+    question: str
+    resolution: str | None = None
+
+
 class Gate(DeepAgentsModel):
     id: str
     type: GateType = GateType.QUALITY
@@ -84,7 +89,7 @@ class Milestone(DeepAgentsModel):
 
 class DiscoveryPlan(TimestampedModel):
     objective: Objective
-    clarifications: list[JsonObject] = Field(default_factory=list)
+    clarifications: list[Clarification] = Field(default_factory=list)
     milestones: list[Milestone] = Field(default_factory=list)
     gates: list[Gate] = Field(default_factory=list)
     capability_map: dict[str, list[str]] = Field(default_factory=dict)

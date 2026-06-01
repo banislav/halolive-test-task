@@ -9,6 +9,7 @@ from deep_agents.runtime.events import (
     TaskCompleted,
     TaskFailed,
 )
+from deep_agents.runtime.observability import ObserverJudge, ProcessJudge, ProgressSignalBus
 from deep_agents.runtime.plan_tracker import PlanTracker
 from deep_agents.runtime.prompt_queue import PromptQueue
 from deep_agents.runtime.results import TaskRunResult
@@ -16,7 +17,10 @@ from deep_agents.runtime.results import TaskRunResult
 __all__ = [
     "Dispatcher",
     "JudgeVerdictReceived",
+    "ObserverJudge",
     "PlanTracker",
+    "ProcessJudge",
+    "ProgressSignalBus",
     "ProgressSignalReceived",
     "PromptQueue",
     "RuntimeEvent",
