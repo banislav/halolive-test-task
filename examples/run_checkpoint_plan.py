@@ -28,7 +28,7 @@ from deep_agents.models import (
     TaskCard,
     Wave,
 )
-from deep_agents.runtime import RuntimeEngine, TaskRunResult
+from deep_agents.runtime import ContextAssembler, RuntimeEngine, TaskExecutionContext, TaskRunResult
 
 OBJECTIVE = "Draft and review a short project summary for a deep-agent runtime."
 
@@ -113,13 +113,16 @@ def build_execution_plan() -> ExecutionPlan:
     )
 
 
-def run_task(task: TaskCard) -> TaskRunResult:
+def run_task(context: TaskExecutionContext) -> TaskRunResult:
+    task = context.task
     if task.id == "T1":
         output = OBJECTIVE_OUTPUT
     else:
+        draft = context.dependency_results["T1"].output
         output = {
             "review": "approved",
-            "reason": "The draft directly describes the requested deep-agent runtime.",
+            "reason": "The dependency draft directly describes the requested runtime.",
+            "reviewed_summary": draft.get("summary"),
             "checked_objective": OBJECTIVE,
         }
 
@@ -181,6 +184,7 @@ def main() -> None:
         worker=RunnableLambda(run_task),
         judge=RunnableLambda(judge_task),
         checkpoint_judge=RunnableLambda(judge_checkpoint),
+        context_assembler=ContextAssembler(),
     )
 
     final_state = engine.invoke(execution_plan, plan_state)
