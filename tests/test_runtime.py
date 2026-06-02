@@ -24,6 +24,8 @@ from deep_agents.models import (
     ProcessJudgment,
     PromptCategory,
     PromptQueueItem,
+    RuntimeCommand,
+    RuntimeCommandStatus,
     RuntimeCommandType,
     Task,
     TaskCard,
@@ -39,6 +41,7 @@ from deep_agents.runtime import (
     ProgressSignalBus,
     PromptHandler,
     PromptQueue,
+    RuntimeCommandExecutor,
     RuntimeEngine,
     TaskExecutionContext,
     TaskRunResult,
@@ -356,6 +359,135 @@ def test_plan_tracker_converts_gate_judgments_to_runtime_commands() -> None:
     assert held[0].payload["gate_id"] == "G1"
 
 
+def test_runtime_command_executor_applies_halt() -> None:
+    plan_state = PlanState(objective=Objective(raw="Test plan"))
+    executor = RuntimeCommandExecutor()
+
+    result = executor.execute(
+        RuntimeCommand(
+            type=RuntimeCommandType.HALT,
+            reason="Stop now.",
+            source="test",
+        ),
+        plan_state=plan_state,
+        execution_plan=build_execution_plan(),
+    )
+
+    assert result.status == RuntimeCommandStatus.APPLIED
+    assert plan_state.status == PlanStatus.PAUSED
+
+
+def test_runtime_command_executor_pauses_targeted_running_task() -> None:
+    plan = build_execution_plan()
+    plan_state = PlanState(
+        objective=Objective(raw="Test plan"),
+        task_statuses={"T1": TaskStatus.RUNNING, "T2": TaskStatus.BLOCKED},
+    )
+
+    result = RuntimeCommandExecutor().execute(
+        RuntimeCommand(
+            type=RuntimeCommandType.PAUSE_TASK,
+            task_id="T1",
+            reason="Pause task.",
+            source="test",
+        ),
+        plan_state=plan_state,
+        execution_plan=plan,
+    )
+
+    assert result.status == RuntimeCommandStatus.APPLIED
+    assert result.affected_task_ids == ["T1"]
+    assert plan_state.task_statuses["T1"] == TaskStatus.PAUSED
+
+
+def test_runtime_command_executor_pauses_all_running_tasks() -> None:
+    plan_state = PlanState(
+        objective=Objective(raw="Test plan"),
+        task_statuses={"T1": TaskStatus.RUNNING, "T2": TaskStatus.RUNNING},
+    )
+
+    result = RuntimeCommandExecutor().execute(
+        RuntimeCommand(
+            type=RuntimeCommandType.PAUSE_TASK,
+            reason="Pause all.",
+            source="test",
+        ),
+        plan_state=plan_state,
+        execution_plan=build_execution_plan(),
+    )
+
+    assert result.status == RuntimeCommandStatus.APPLIED
+    assert result.affected_task_ids == ["T1", "T2"]
+    assert plan_state.status == PlanStatus.PAUSED
+    assert set(plan_state.task_statuses.values()) == {TaskStatus.PAUSED}
+
+
+def test_runtime_command_executor_resumes_paused_unblocked_tasks() -> None:
+    plan = build_execution_plan()
+    plan_state = PlanState(
+        objective=Objective(raw="Test plan"),
+        status=PlanStatus.PAUSED,
+        task_statuses={"T1": TaskStatus.PAUSED, "T2": TaskStatus.PAUSED},
+    )
+
+    result = RuntimeCommandExecutor().execute(
+        RuntimeCommand(
+            type=RuntimeCommandType.RESUME_TASK,
+            task_id="T1",
+            reason="Resume task.",
+            source="test",
+        ),
+        plan_state=plan_state,
+        execution_plan=plan,
+    )
+
+    assert result.status == RuntimeCommandStatus.APPLIED
+    assert result.affected_task_ids == ["T1"]
+    assert plan_state.task_statuses["T1"] == TaskStatus.READY
+    assert plan_state.task_statuses["T2"] == TaskStatus.PAUSED
+    assert plan_state.status == PlanStatus.EXECUTING
+
+
+def test_runtime_command_executor_terminates_task() -> None:
+    plan_state = PlanState(
+        objective=Objective(raw="Test plan"),
+        task_statuses={"T1": TaskStatus.RUNNING, "T2": TaskStatus.BLOCKED},
+    )
+
+    result = RuntimeCommandExecutor().execute(
+        RuntimeCommand(
+            type=RuntimeCommandType.TERMINATE_TASK,
+            task_id="T1",
+            reason="Terminate task.",
+            source="test",
+        ),
+        plan_state=plan_state,
+        execution_plan=build_execution_plan(),
+    )
+
+    assert result.status == RuntimeCommandStatus.APPLIED
+    assert result.affected_task_ids == ["T1"]
+    assert plan_state.task_statuses["T1"] == TaskStatus.TERMINATED
+    assert plan_state.status == PlanStatus.REFINING
+
+
+def test_runtime_command_executor_ignores_advisory_commands() -> None:
+    plan_state = PlanState(objective=Objective(raw="Test plan"))
+
+    result = RuntimeCommandExecutor().execute(
+        RuntimeCommand(
+            type=RuntimeCommandType.REQUEST_REPLAN,
+            reason="Needs replan.",
+            source="test",
+        ),
+        plan_state=plan_state,
+        execution_plan=build_execution_plan(),
+    )
+
+    assert result.status == RuntimeCommandStatus.IGNORED
+    assert plan_state.status == PlanStatus.INITIALIZING
+
+
 def test_prompt_queue_places_lifo_interrupts_first() -> None:
     queue = PromptQueue()
     queue.push(PromptQueueItem(id="P1", content="Normal feedback", priority=3))
@@ -532,6 +664,11 @@ def test_runtime_engine_records_plan_update_prompt_command() -> None:
         command.type == RuntimeCommandType.REQUEST_REPLAN
         for command in final_state["runtime_commands"]
     )
+    assert any(
+        result.command.type == RuntimeCommandType.REQUEST_REPLAN
+        and result.status == RuntimeCommandStatus.IGNORED
+        for result in final_state["command_results"]
+    )
     assert final_state["plan_state"].status == PlanStatus.COMPLETED
 
 
@@ -576,6 +713,11 @@ def test_runtime_engine_records_p1_pause_prompt_command() -> None:
         command.type == RuntimeCommandType.PAUSE_TASK
         for command in final_state["runtime_commands"]
     )
+    assert any(
+        result.command.type == RuntimeCommandType.PAUSE_TASK
+        and result.status == RuntimeCommandStatus.IGNORED
+        for result in final_state["command_results"]
+    )
     assert final_state["plan_state"].status == PlanStatus.COMPLETED
 
 
@@ -610,6 +752,12 @@ def test_runtime_engine_halts_dispatch_for_p0_prompt() -> None:
         command.type == RuntimeCommandType.HALT
         for command in final_state["runtime_commands"]
     )
+    assert any(
+        result.command.type == RuntimeCommandType.HALT
+        and result.status == RuntimeCommandStatus.APPLIED
+        for result in final_state["command_results"]
+    )
+    assert final_state["plan_state"].status == PlanStatus.PAUSED
     assert final_state["plan_state"].task_statuses == {"T1": "ready", "T2": "blocked"}
 
 
@@ -693,6 +841,11 @@ def test_runtime_engine_evaluates_completed_milestone_checkpoint_gate() -> None:
     assert any(
         command.type == RuntimeCommandType.HOLD_GATE
         for command in final_state["runtime_commands"]
+    )
+    assert any(
+        result.command.type == RuntimeCommandType.HOLD_GATE
+        and result.status == RuntimeCommandStatus.IGNORED
+        for result in final_state["command_results"]
     )
     assert final_state["plan_state"].status == PlanStatus.COMPLETED
 
@@ -880,6 +1033,11 @@ def test_runtime_engine_emits_progress_signals_and_collects_judgments() -> None:
     assert any(
         command.type == RuntimeCommandType.MARK_EARLY_COMPLETE
         for command in final_state["runtime_commands"]
+    )
+    assert any(
+        result.command.type == RuntimeCommandType.MARK_EARLY_COMPLETE
+        and result.status == RuntimeCommandStatus.APPLIED
+        for result in final_state["command_results"]
     )
 
 

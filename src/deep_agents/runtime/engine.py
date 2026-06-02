@@ -25,9 +25,12 @@ from deep_agents.models import (
     PromptReasoningInput,
     PromptResponse,
     RuntimeCommand,
+    RuntimeCommandResult,
+    RuntimeCommandStatus,
     RuntimeCommandType,
     TaskCard,
 )
+from deep_agents.runtime.command_executor import RuntimeCommandExecutor
 from deep_agents.runtime.context import ContextAssembler, TaskExecutionContext
 from deep_agents.runtime.observability import ProgressSignalBus
 from deep_agents.runtime.plan_tracker import PlanTracker
@@ -52,6 +55,7 @@ class RuntimeGraphState(TypedDict):
     gate_judgments: NotRequired[list[GateJudgment]]
     prompt_results: NotRequired[list[PromptHandlingResult]]
     runtime_commands: NotRequired[list[RuntimeCommand]]
+    command_results: NotRequired[list[RuntimeCommandResult]]
 
 
 class RuntimeEngine:
@@ -68,6 +72,7 @@ class RuntimeEngine:
         | None = None,
         content_reasoner: Runnable[PromptReasoningInput, PromptResponse | dict[str, Any]]
         | None = None,
+        command_executor: RuntimeCommandExecutor | None = None,
         progress_bus: ProgressSignalBus | None = None,
         recursion_limit: int = 100,
     ) -> None:
@@ -81,6 +86,7 @@ class RuntimeEngine:
             prompt_classifier=prompt_classifier,
             content_reasoner=content_reasoner,
         )
+        self.command_executor = command_executor or RuntimeCommandExecutor()
         self.progress_bus = progress_bus or ProgressSignalBus()
         self.recursion_limit = recursion_limit
         self.graph = self._build_graph()
@@ -104,6 +110,7 @@ class RuntimeEngine:
             "gate_judgments": [],
             "prompt_results": [],
             "runtime_commands": [],
+            "command_results": [],
         }
         try:
             final_state = self.graph.invoke(
@@ -148,6 +155,7 @@ class RuntimeEngine:
             "gate_judgments": [],
             "prompt_results": [],
             "runtime_commands": [],
+            "command_results": [],
         }
         try:
             final_state = await self.graph.ainvoke(
@@ -491,7 +499,7 @@ class RuntimeEngine:
             for command in result.commands
         ]
         if commands:
-            state.setdefault("runtime_commands", []).extend(commands)
+            self._record_runtime_commands(state, commands)
         logger.info(
             "prompt queue handled",
             extra={
@@ -500,7 +508,45 @@ class RuntimeEngine:
                 "command_types": [command.type for command in commands],
             },
         )
-        return any(command.type == RuntimeCommandType.HALT for command in commands)
+        return self._has_applied_halt(state)
+
+    def _record_runtime_commands(
+        self,
+        state: RuntimeGraphState,
+        commands: list[RuntimeCommand],
+    ) -> list[RuntimeCommandResult]:
+        if not commands:
+            return []
+        state.setdefault("runtime_commands", []).extend(commands)
+        results = self.command_executor.execute_all(
+            commands,
+            plan_state=state["plan_state"],
+            execution_plan=state["execution_plan"],
+        )
+        state.setdefault("command_results", []).extend(results)
+        logger.info(
+            "runtime commands executed",
+            extra={
+                "command_count": len(commands),
+                "applied_count": sum(
+                    result.status == RuntimeCommandStatus.APPLIED for result in results
+                ),
+                "ignored_count": sum(
+                    result.status == RuntimeCommandStatus.IGNORED for result in results
+                ),
+                "failed_count": sum(
+                    result.status == RuntimeCommandStatus.FAILED for result in results
+                ),
+            },
+        )
+        return results
+
+    def _has_applied_halt(self, state: RuntimeGraphState) -> bool:
+        return any(
+            result.command.type == RuntimeCommandType.HALT
+            and result.status == RuntimeCommandStatus.APPLIED
+            for result in state.get("command_results", [])
+        )
 
     def _current_task(self, state: RuntimeGraphState) -> TaskCard:
         task_id = state.get("current_task_id")
@@ -610,7 +656,7 @@ class RuntimeEngine:
         state.setdefault("gate_judgments", []).append(judgment)
         commands = tracker.apply_gate_judgment(judgment)
         if commands:
-            state.setdefault("runtime_commands", []).extend(commands)
+            self._record_runtime_commands(state, commands)
             logger.info(
                 "checkpoint gate commands recorded",
                 extra={
@@ -679,7 +725,7 @@ class RuntimeEngine:
                 commands = []
 
             if commands:
-                state.setdefault("runtime_commands", []).extend(commands)
+                self._record_runtime_commands(state, commands)
                 logger.info(
                     "runtime commands recorded",
                     extra={

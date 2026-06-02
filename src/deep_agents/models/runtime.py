@@ -19,6 +19,13 @@ class RuntimeCommandType(StrEnum):
     REQUEST_REPLAN = "request_replan"
 
 
+class RuntimeCommandStatus(StrEnum):
+    PENDING = "pending"
+    APPLIED = "applied"
+    IGNORED = "ignored"
+    FAILED = "failed"
+
+
 class RuntimeCommand(DeepAgentsModel):
     type: RuntimeCommandType
     task_id: str | None = None
@@ -26,3 +33,10 @@ class RuntimeCommand(DeepAgentsModel):
     payload: JsonObject = Field(default_factory=dict)
     source: str
     created_at: str = Field(default_factory=lambda: utc_now().isoformat())
+
+
+class RuntimeCommandResult(DeepAgentsModel):
+    command: RuntimeCommand
+    status: RuntimeCommandStatus = RuntimeCommandStatus.PENDING
+    reason: str
+    affected_task_ids: list[str] = Field(default_factory=list)

@@ -48,7 +48,12 @@ from deep_agents.models.prompts import (
     PromptReasoningInput,
     PromptResponse,
 )
-from deep_agents.models.runtime import RuntimeCommand, RuntimeCommandType
+from deep_agents.models.runtime import (
+    RuntimeCommand,
+    RuntimeCommandResult,
+    RuntimeCommandStatus,
+    RuntimeCommandType,
+)
 from deep_agents.models.signals import ProgressSignal, ProgressSignalPayload, ProgressSignalType
 from deep_agents.models.skills import (
     SkillAssignment,
@@ -107,6 +112,8 @@ __all__ = [
     "RetryPolicy",
     "Risk",
     "RuntimeCommand",
+    "RuntimeCommandResult",
+    "RuntimeCommandStatus",
     "RuntimeCommandType",
     "SkillAssignment",
     "SkillContextCost",
