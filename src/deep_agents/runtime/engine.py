@@ -12,6 +12,8 @@ from deep_agents.models import (
     GateJudgment,
     JudgeRecommendation,
     JudgeVerdict,
+    MemoryKind,
+    MemoryRecord,
     Milestone,
     ObserverJudgment,
     PlanState,
@@ -34,6 +36,7 @@ from deep_agents.models import (
 )
 from deep_agents.runtime.command_executor import RuntimeCommandExecutor
 from deep_agents.runtime.context import ContextAssembler, TaskExecutionContext
+from deep_agents.runtime.memory import InMemoryStore, MemoryRecorder, MemoryStore
 from deep_agents.runtime.observability import ProgressSignalBus
 from deep_agents.runtime.plan_tracker import PlanTracker
 from deep_agents.runtime.prompt_handler import PromptHandler
@@ -60,6 +63,7 @@ class RuntimeGraphState(TypedDict):
     runtime_commands: NotRequired[list[RuntimeCommand]]
     command_results: NotRequired[list[RuntimeCommandResult]]
     replan_results: NotRequired[list[RuntimeReplanResult]]
+    memory_records: NotRequired[list[MemoryRecord]]
 
 
 class RuntimeEngine:
@@ -78,6 +82,7 @@ class RuntimeEngine:
         | None = None,
         command_executor: RuntimeCommandExecutor | None = None,
         runtime_replanner: RuntimeReplanner | None = None,
+        memory_store: MemoryStore | None = None,
         progress_bus: ProgressSignalBus | None = None,
         recursion_limit: int = 100,
     ) -> None:
@@ -85,7 +90,11 @@ class RuntimeEngine:
         self.worker = worker
         self.judge = judge
         self.checkpoint_judge = checkpoint_judge
+        self.memory_store = memory_store or InMemoryStore()
+        self.memory_recorder = MemoryRecorder(self.memory_store)
         self.context_assembler = context_assembler
+        if self.context_assembler is not None and self.context_assembler.memory_store is None:
+            self.context_assembler.memory_store = self.memory_store
         self.prompt_queue = prompt_queue
         self.prompt_handler = PromptHandler(
             prompt_classifier=prompt_classifier,
@@ -118,7 +127,16 @@ class RuntimeEngine:
             "runtime_commands": [],
             "command_results": [],
             "replan_results": [],
+            "memory_records": [],
         }
+        self.memory_recorder.record_plan_snapshot(
+            execution_plan=execution_plan,
+            plan_state=plan_state,
+            results={},
+            source="runtime_engine",
+            reason="initial_plan",
+        )
+        self._sync_memory_state(initial_state)
         try:
             final_state = self.graph.invoke(
                 initial_state,
@@ -130,6 +148,7 @@ class RuntimeEngine:
                 extra={"execution_plan_id": execution_plan.id},
             )
             raise
+        self._sync_memory_state(final_state)
         logger.info(
             "runtime engine invoke completed",
             extra={
@@ -164,7 +183,16 @@ class RuntimeEngine:
             "runtime_commands": [],
             "command_results": [],
             "replan_results": [],
+            "memory_records": [],
         }
+        self.memory_recorder.record_plan_snapshot(
+            execution_plan=execution_plan,
+            plan_state=plan_state,
+            results={},
+            source="runtime_engine",
+            reason="initial_plan",
+        )
+        self._sync_memory_state(initial_state)
         try:
             final_state = await self.graph.ainvoke(
                 initial_state,
@@ -176,6 +204,7 @@ class RuntimeEngine:
                 extra={"execution_plan_id": execution_plan.id},
             )
             raise
+        self._sync_memory_state(final_state)
         logger.info(
             "runtime engine async invoke completed",
             extra={
@@ -231,6 +260,18 @@ class RuntimeEngine:
             task_id = ready_ids[0]
             tracker.mark_running(task_id)
             state["current_task_id"] = task_id
+            task = self._current_task(state)
+            self.memory_recorder.put(
+                kind=MemoryKind.WORKING,
+                source="dispatcher",
+                task_id=task_id,
+                plan_id=state["execution_plan"].id,
+                tags=["task_dispatch"],
+                payload={
+                    "task": task.model_dump(mode="json"),
+                    "plan_status": tracker.state.status,
+                },
+            )
             self._publish_signal(
                 state,
                 task_id=task_id,
@@ -239,7 +280,7 @@ class RuntimeEngine:
                     status="dispatched",
                     data={
                         "execution_plan_id": state["execution_plan"].id,
-                        "wave": self._current_task(state).wave,
+                        "wave": task.wave,
                     },
                 ),
             )
@@ -264,6 +305,10 @@ class RuntimeEngine:
             )
             result = self.worker.invoke(self._worker_input(task, state))
             state["latest_result"] = self._coerce_result(task.id, result)
+            self.memory_recorder.record_task_result(
+                state["latest_result"],
+                plan_id=state["execution_plan"].id,
+            )
             self._publish_signal(
                 state,
                 task_id=task.id,
@@ -310,6 +355,10 @@ class RuntimeEngine:
             )
             result = await self.worker.ainvoke(self._worker_input(task, state))
             state["latest_result"] = self._coerce_result(task.id, result)
+            self.memory_recorder.record_task_result(
+                state["latest_result"],
+                plan_id=state["execution_plan"].id,
+            )
             self._publish_signal(
                 state,
                 task_id=task.id,
@@ -357,6 +406,10 @@ class RuntimeEngine:
             )
             verdict = self.judge.invoke({"task": task, "result": result})
             state["latest_verdict"] = self._coerce_verdict(verdict)
+            self.memory_recorder.record_judge_verdict(
+                state["latest_verdict"],
+                plan_id=state["execution_plan"].id,
+            )
             self._publish_signal(
                 state,
                 task_id=task.id,
@@ -399,6 +452,10 @@ class RuntimeEngine:
             )
             verdict = await self.judge.ainvoke({"task": task, "result": result})
             state["latest_verdict"] = self._coerce_verdict(verdict)
+            self.memory_recorder.record_judge_verdict(
+                state["latest_verdict"],
+                plan_id=state["execution_plan"].id,
+            )
             self._publish_signal(
                 state,
                 task_id=task.id,
@@ -520,6 +577,11 @@ class RuntimeEngine:
             current_task_id=state.get("current_task_id"),
         )
         state.setdefault("prompt_results", []).extend(prompt_results)
+        for prompt_result in prompt_results:
+            self.memory_recorder.record_prompt_result(
+                prompt_result,
+                plan_id=state["execution_plan"].id,
+            )
 
         commands = [
             command
@@ -546,12 +608,22 @@ class RuntimeEngine:
         if not commands:
             return []
         state.setdefault("runtime_commands", []).extend(commands)
+        for command in commands:
+            self.memory_recorder.record_runtime_command(
+                command,
+                plan_id=state["execution_plan"].id,
+            )
         results = self.command_executor.execute_all(
             commands,
             plan_state=state["plan_state"],
             execution_plan=state["execution_plan"],
         )
         state.setdefault("command_results", []).extend(results)
+        for result in results:
+            self.memory_recorder.record_command_result(
+                result,
+                plan_id=state["execution_plan"].id,
+            )
         self._maybe_replan_from_command_results(state, results)
         logger.info(
             "runtime commands executed",
@@ -581,14 +653,33 @@ class RuntimeEngine:
         for result in results:
             if result.command.type != RuntimeCommandType.REQUEST_REPLAN:
                 continue
+            previous_plan = state["execution_plan"]
+            previous_result_ids = set(state.get("results", {}))
+            self.memory_recorder.record_plan_snapshot(
+                execution_plan=previous_plan,
+                plan_state=state["plan_state"],
+                results=state.get("results", {}),
+                source="runtime_replanner",
+                reason="before_replan",
+            )
             replacement_plan, replan_result = self.runtime_replanner.replan(
                 trigger=result,
-                execution_plan=state["execution_plan"],
+                execution_plan=previous_plan,
                 plan_state=state["plan_state"],
                 results=state.setdefault("results", {}),
             )
             state["execution_plan"] = replacement_plan
             state.setdefault("replan_results", []).append(replan_result)
+            self.memory_recorder.record_replan_result(replan_result)
+            current_result_ids = set(state.get("results", {}))
+            if replan_result.new_execution_plan_id is not None:
+                self.memory_recorder.record_plan_transition(
+                    previous_plan_id=replan_result.previous_execution_plan_id,
+                    new_plan_id=replan_result.new_execution_plan_id,
+                    trigger=result,
+                    preserved_task_ids=sorted(previous_result_ids & current_result_ids),
+                    dropped_task_ids=sorted(previous_result_ids - current_result_ids),
+                )
             logger.info(
                 "runtime replan handled",
                 extra={
@@ -632,6 +723,10 @@ class RuntimeEngine:
             results=state.get("results", {}),
         )
         state["current_context"] = context
+        self.memory_recorder.record_working_context(
+            context,
+            plan_id=state["execution_plan"].id,
+        )
         logger.info(
             "worker context assembled",
             extra={
@@ -645,6 +740,9 @@ class RuntimeEngine:
 
     def _is_terminal(self, status: PlanStatus | str) -> bool:
         return PlanStatus(status) in {PlanStatus.COMPLETED, PlanStatus.FAILED, PlanStatus.PAUSED}
+
+    def _sync_memory_state(self, state: RuntimeGraphState) -> None:
+        state["memory_records"] = self.memory_store.records()
 
     def _coerce_result(self, task_id: str, value: TaskRunResult | dict[str, Any]) -> TaskRunResult:
         if isinstance(value, TaskRunResult):
@@ -711,6 +809,10 @@ class RuntimeEngine:
         )
         judgment = self._coerce_gate_judgment(result)
         state.setdefault("gate_judgments", []).append(judgment)
+        self.memory_recorder.record_gate_judgment(
+            judgment,
+            plan_id=state["execution_plan"].id,
+        )
         commands = tracker.apply_gate_judgment(judgment)
         if commands:
             self._record_runtime_commands(state, commands)
@@ -749,6 +851,10 @@ class RuntimeEngine:
         payload: ProgressSignalPayload,
     ) -> None:
         signal = ProgressSignal(task_id=task_id, signal_type=signal_type, payload=payload)
+        self.memory_recorder.record_progress_signal(
+            signal,
+            plan_id=state["execution_plan"].id,
+        )
         judgments = self.progress_bus.publish(signal)
         logger.info(
             "progress signal published",
@@ -763,6 +869,10 @@ class RuntimeEngine:
             tracker = PlanTracker(state["plan_state"], state["execution_plan"])
             if isinstance(judgment, ProcessJudgment):
                 state.setdefault("process_judgments", []).append(judgment)
+                self.memory_recorder.record_process_judgment(
+                    judgment,
+                    plan_id=state["execution_plan"].id,
+                )
                 logger.info(
                     "process judgment recorded",
                     extra={"task_id": judgment.task_id, "assessment": judgment.assessment},
@@ -770,6 +880,10 @@ class RuntimeEngine:
                 commands = tracker.apply_process_judgment(judgment)
             elif isinstance(judgment, ObserverJudgment):
                 state.setdefault("observer_judgments", []).append(judgment)
+                self.memory_recorder.record_observer_judgment(
+                    judgment,
+                    plan_id=state["execution_plan"].id,
+                )
                 logger.info(
                     "observer judgment recorded",
                     extra={"health": judgment.health},

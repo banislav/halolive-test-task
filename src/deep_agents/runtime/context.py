@@ -10,6 +10,8 @@ from deep_agents.models import (
     DeepAgentsModel,
     ExecutionPlan,
     LayeredContext,
+    MemoryKind,
+    MemoryQuery,
     Objective,
     PlanState,
     TaskCard,
@@ -104,11 +106,13 @@ class ContextAssembler:
         self,
         *,
         artifact_store: ArtifactStore | None = None,
+        memory_store: object | None = None,
         skill_loader: SkillLoader | None = None,
         summary_max_chars: int = 280,
         chars_per_token: int = 4,
     ) -> None:
         self.artifact_store = artifact_store or ArtifactStore()
+        self.memory_store = memory_store
         self.skill_loader = skill_loader
         self.summary_max_chars = summary_max_chars
         self.chars_per_token = chars_per_token
@@ -122,7 +126,9 @@ class ContextAssembler:
         results: dict[str, TaskRunResult] | None = None,
     ) -> TaskExecutionContext:
         """Return the relevant context slice for one task."""
-        results = results or {}
+        resolved_results = self._results_from_memory(execution_plan.id)
+        resolved_results.update(results or {})
+        results = resolved_results
         for result in results.values():
             self.artifact_store.add_result(result)
 
@@ -144,7 +150,7 @@ class ContextAssembler:
             loaded_skill_ids = [skill.definition.id for skill in loaded]
             skill_context = self.skill_loader.render_context(task.assigned_to.skills)
 
-        artifacts = self._artifact_refs(task, dependency_ids)
+        artifacts = self._artifact_refs(task, dependency_ids, execution_plan.id)
         plan_context = self._plan_context(task, execution_plan, plan_state, dependency_ids)
         budget_report = self._apply_budget(
             task=task,
@@ -201,14 +207,80 @@ class ContextAssembler:
                 dependency_ids.append(task_id)
         return dependency_ids
 
-    def _artifact_refs(self, task: TaskCard, dependency_ids: list[str]) -> list[ArtifactRef]:
+    def _artifact_refs(
+        self,
+        task: TaskCard,
+        dependency_ids: list[str],
+        execution_plan_id: str,
+    ) -> list[ArtifactRef]:
         refs: list[ArtifactRef] = []
         seen: set[str] = set()
-        for artifact in [*task.input_artifacts, *self.artifact_store.for_task_ids(dependency_ids)]:
+        for artifact in [
+            *task.input_artifacts,
+            *self.artifact_store.for_task_ids(dependency_ids),
+            *self._artifact_refs_from_memory(dependency_ids, execution_plan_id),
+        ]:
             if artifact.id in seen:
                 continue
             refs.append(artifact)
             seen.add(artifact.id)
+        return refs
+
+    def _results_from_memory(self, execution_plan_id: str) -> dict[str, TaskRunResult]:
+        if self.memory_store is None or not hasattr(self.memory_store, "query"):
+            return {}
+
+        records = self.memory_store.query(
+            MemoryQuery(
+                kinds=[MemoryKind.WORKING],
+                plan_ids=[execution_plan_id],
+                tags=["task_result"],
+            )
+        )
+        if not records:
+            records = self.memory_store.query(
+                MemoryQuery(kinds=[MemoryKind.WORKING], tags=["task_result"])
+            )
+
+        results: dict[str, TaskRunResult] = {}
+        for record in records:
+            payload = record.payload.get("result")
+            if not isinstance(payload, dict):
+                continue
+            result = TaskRunResult.model_validate(payload)
+            results[result.task_id] = result
+        return results
+
+    def _artifact_refs_from_memory(
+        self,
+        dependency_ids: list[str],
+        execution_plan_id: str,
+    ) -> list[ArtifactRef]:
+        if self.memory_store is None or not hasattr(self.memory_store, "query"):
+            return []
+
+        refs: list[ArtifactRef] = []
+        for task_id in dependency_ids:
+            records = self.memory_store.query(
+                MemoryQuery(
+                    kinds=[MemoryKind.SESSION],
+                    task_ids=[task_id],
+                    plan_ids=[execution_plan_id],
+                    tags=["artifact"],
+                )
+            )
+            if not records:
+                records = self.memory_store.query(
+                    MemoryQuery(
+                        kinds=[MemoryKind.SESSION],
+                        task_ids=[task_id],
+                        tags=["artifact"],
+                    )
+                )
+            for record in records:
+                payload = record.payload.get("artifact")
+                if isinstance(payload, dict):
+                    refs.append(ArtifactRef.model_validate(payload))
         return refs
 
     def _plan_context(
