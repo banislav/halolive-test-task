@@ -3,6 +3,7 @@
 from deep_agents.runtime.context import (
     ArtifactStore,
     ContextAssembler,
+    ContextBudgetReport,
     TaskExecutionContext,
     TaskResultContext,
 )
@@ -22,6 +23,7 @@ from deep_agents.runtime.results import TaskRunResult
 
 __all__ = [
     "ArtifactStore",
+    "ContextBudgetReport",
     "ContextAssembler",
     "Dispatcher",
     "JudgeVerdictReceived",

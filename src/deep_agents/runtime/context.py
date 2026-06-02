@@ -29,6 +29,18 @@ class TaskResultContext(DeepAgentsModel):
     summary: str | None = None
 
 
+class ContextBudgetReport(DeepAgentsModel):
+    """Estimated context budget usage after deterministic compaction."""
+
+    max_tokens: int = 0
+    reserved_response_tokens: int = 0
+    available_input_tokens: int = 0
+    estimated_input_tokens: int = 0
+    over_budget: bool = False
+    compacted_result_ids: list[str] = Field(default_factory=list)
+    dropped_prior_result_ids: list[str] = Field(default_factory=list)
+
+
 class TaskExecutionContext(DeepAgentsModel):
     """Need-to-know context assembled for a single worker invocation."""
 
@@ -40,6 +52,7 @@ class TaskExecutionContext(DeepAgentsModel):
     artifacts: list[ArtifactRef] = Field(default_factory=list)
     skill_context: str = ""
     loaded_skill_ids: list[str] = Field(default_factory=list)
+    budget_report: ContextBudgetReport = Field(default_factory=ContextBudgetReport)
     layered_context: LayeredContext = Field(default_factory=LayeredContext)
 
 
@@ -93,10 +106,12 @@ class ContextAssembler:
         artifact_store: ArtifactStore | None = None,
         skill_loader: SkillLoader | None = None,
         summary_max_chars: int = 280,
+        chars_per_token: int = 4,
     ) -> None:
         self.artifact_store = artifact_store or ArtifactStore()
         self.skill_loader = skill_loader
         self.summary_max_chars = summary_max_chars
+        self.chars_per_token = chars_per_token
 
     def assemble(
         self,
@@ -131,6 +146,14 @@ class ContextAssembler:
 
         artifacts = self._artifact_refs(task, dependency_ids)
         plan_context = self._plan_context(task, execution_plan, plan_state, dependency_ids)
+        budget_report = self._apply_budget(
+            task=task,
+            plan_context=plan_context,
+            dependency_results=dependency_results,
+            prior_result_summaries=prior_result_summaries,
+            artifacts=artifacts,
+            skill_context=skill_context,
+        )
         layered_context = LayeredContext(
             global_objective=plan_state.objective.model_dump(mode="json"),
             plan_state={
@@ -166,6 +189,7 @@ class ContextAssembler:
             artifacts=artifacts,
             skill_context=skill_context,
             loaded_skill_ids=loaded_skill_ids,
+            budget_report=budget_report,
             layered_context=layered_context,
         )
 
@@ -224,6 +248,100 @@ class ContextAssembler:
             status=result.status,
             artifacts=result.artifacts,
             summary=self._summarize_output(result.output),
+        )
+
+    def _apply_budget(
+        self,
+        *,
+        task: TaskCard,
+        plan_context: JsonObject,
+        dependency_results: dict[str, TaskResultContext],
+        prior_result_summaries: list[TaskResultContext],
+        artifacts: list[ArtifactRef],
+        skill_context: str,
+    ) -> ContextBudgetReport:
+        available = max(
+            task.context_budget.max_tokens - task.context_budget.reserved_response_tokens,
+            0,
+        )
+        compacted_result_ids: list[str] = []
+        dropped_prior_result_ids: list[str] = []
+        estimated = self._estimate_context_tokens(
+            plan_context=plan_context,
+            dependency_results=dependency_results,
+            prior_result_summaries=prior_result_summaries,
+            artifacts=artifacts,
+            skill_context=skill_context,
+        )
+
+        while prior_result_summaries and estimated > available:
+            dropped = prior_result_summaries.pop(0)
+            dropped_prior_result_ids.append(dropped.task_id)
+            estimated = self._estimate_context_tokens(
+                plan_context=plan_context,
+                dependency_results=dependency_results,
+                prior_result_summaries=prior_result_summaries,
+                artifacts=artifacts,
+                skill_context=skill_context,
+            )
+
+        for result in self._largest_results_first(dependency_results):
+            if estimated <= available:
+                break
+            if not result.output:
+                continue
+            result.output = {}
+            compacted_result_ids.append(result.task_id)
+            estimated = self._estimate_context_tokens(
+                plan_context=plan_context,
+                dependency_results=dependency_results,
+                prior_result_summaries=prior_result_summaries,
+                artifacts=artifacts,
+                skill_context=skill_context,
+            )
+
+        return ContextBudgetReport(
+            max_tokens=task.context_budget.max_tokens,
+            reserved_response_tokens=task.context_budget.reserved_response_tokens,
+            available_input_tokens=available,
+            estimated_input_tokens=estimated,
+            over_budget=estimated > available,
+            compacted_result_ids=compacted_result_ids,
+            dropped_prior_result_ids=dropped_prior_result_ids,
+        )
+
+    def _estimate_context_tokens(
+        self,
+        *,
+        plan_context: JsonObject,
+        dependency_results: dict[str, TaskResultContext],
+        prior_result_summaries: list[TaskResultContext],
+        artifacts: list[ArtifactRef],
+        skill_context: str,
+    ) -> int:
+        payload = {
+            "plan_context": plan_context,
+            "dependency_results": {
+                task_id: result.model_dump(mode="json")
+                for task_id, result in dependency_results.items()
+            },
+            "prior_result_summaries": [
+                result.model_dump(mode="json") for result in prior_result_summaries
+            ],
+            "artifacts": [artifact.model_dump(mode="json") for artifact in artifacts],
+            "skill_context": skill_context,
+        }
+        char_count = len(json.dumps(payload, sort_keys=True))
+        return max(1, (char_count + self.chars_per_token - 1) // self.chars_per_token)
+
+    def _largest_results_first(
+        self,
+        dependency_results: dict[str, TaskResultContext],
+    ) -> list[TaskResultContext]:
+        return sorted(
+            dependency_results.values(),
+            key=lambda result: len(json.dumps(result.output, sort_keys=True)),
+            reverse=True,
         )
 
     def _summarize_output(self, output: JsonObject) -> str:
