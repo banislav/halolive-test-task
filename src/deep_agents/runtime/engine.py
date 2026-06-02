@@ -10,6 +10,7 @@ from deep_agents.models import (
     ExecutionPlan,
     Gate,
     GateJudgment,
+    JudgeRecommendation,
     JudgeVerdict,
     Milestone,
     ObserverJudgment,
@@ -28,6 +29,7 @@ from deep_agents.models import (
     RuntimeCommandResult,
     RuntimeCommandStatus,
     RuntimeCommandType,
+    RuntimeReplanResult,
     TaskCard,
 )
 from deep_agents.runtime.command_executor import RuntimeCommandExecutor
@@ -36,6 +38,7 @@ from deep_agents.runtime.observability import ProgressSignalBus
 from deep_agents.runtime.plan_tracker import PlanTracker
 from deep_agents.runtime.prompt_handler import PromptHandler
 from deep_agents.runtime.prompt_queue import PromptQueue
+from deep_agents.runtime.replanner import RuntimeReplanner
 from deep_agents.runtime.results import TaskRunResult
 
 logger = get_logger(__name__)
@@ -56,6 +59,7 @@ class RuntimeGraphState(TypedDict):
     prompt_results: NotRequired[list[PromptHandlingResult]]
     runtime_commands: NotRequired[list[RuntimeCommand]]
     command_results: NotRequired[list[RuntimeCommandResult]]
+    replan_results: NotRequired[list[RuntimeReplanResult]]
 
 
 class RuntimeEngine:
@@ -73,6 +77,7 @@ class RuntimeEngine:
         content_reasoner: Runnable[PromptReasoningInput, PromptResponse | dict[str, Any]]
         | None = None,
         command_executor: RuntimeCommandExecutor | None = None,
+        runtime_replanner: RuntimeReplanner | None = None,
         progress_bus: ProgressSignalBus | None = None,
         recursion_limit: int = 100,
     ) -> None:
@@ -87,6 +92,7 @@ class RuntimeEngine:
             content_reasoner=content_reasoner,
         )
         self.command_executor = command_executor or RuntimeCommandExecutor()
+        self.runtime_replanner = runtime_replanner
         self.progress_bus = progress_bus or ProgressSignalBus()
         self.recursion_limit = recursion_limit
         self.graph = self._build_graph()
@@ -111,6 +117,7 @@ class RuntimeEngine:
             "prompt_results": [],
             "runtime_commands": [],
             "command_results": [],
+            "replan_results": [],
         }
         try:
             final_state = self.graph.invoke(
@@ -156,6 +163,7 @@ class RuntimeEngine:
             "prompt_results": [],
             "runtime_commands": [],
             "command_results": [],
+            "replan_results": [],
         }
         try:
             final_state = await self.graph.ainvoke(
@@ -210,6 +218,7 @@ class RuntimeEngine:
                 state["current_task_id"] = None
                 return state
 
+            tracker = PlanTracker(state["plan_state"], state["execution_plan"])
             ready_ids = tracker.refresh_readiness()
             if not ready_ids:
                 logger.info(
@@ -436,6 +445,25 @@ class RuntimeEngine:
                 results[result.task_id] = result
                 logger.info("task result recorded", extra={"task_id": result.task_id})
 
+            if verdict.recommendation == JudgeRecommendation.REPLAN:
+                self._record_runtime_commands(
+                    state,
+                    [
+                        RuntimeCommand(
+                            type=RuntimeCommandType.REQUEST_REPLAN,
+                            task_id=verdict.task_id,
+                            reason="Task judge requested replanning.",
+                            payload={
+                                "verdict": verdict.verdict,
+                                "recommendation": verdict.recommendation,
+                                "confidence": verdict.overall_confidence,
+                            },
+                            source="task_judge",
+                        )
+                    ],
+                )
+                tracker = PlanTracker(state["plan_state"], state["execution_plan"])
+
             self._evaluate_checkpoint_gates(state, tracker)
 
             self._publish_signal(
@@ -524,6 +552,7 @@ class RuntimeEngine:
             execution_plan=state["execution_plan"],
         )
         state.setdefault("command_results", []).extend(results)
+        self._maybe_replan_from_command_results(state, results)
         logger.info(
             "runtime commands executed",
             extra={
@@ -540,6 +569,34 @@ class RuntimeEngine:
             },
         )
         return results
+
+    def _maybe_replan_from_command_results(
+        self,
+        state: RuntimeGraphState,
+        results: list[RuntimeCommandResult],
+    ) -> None:
+        if self.runtime_replanner is None:
+            return
+
+        for result in results:
+            if result.command.type != RuntimeCommandType.REQUEST_REPLAN:
+                continue
+            replacement_plan, replan_result = self.runtime_replanner.replan(
+                trigger=result,
+                execution_plan=state["execution_plan"],
+                plan_state=state["plan_state"],
+                results=state.setdefault("results", {}),
+            )
+            state["execution_plan"] = replacement_plan
+            state.setdefault("replan_results", []).append(replan_result)
+            logger.info(
+                "runtime replan handled",
+                extra={
+                    "status": replan_result.status,
+                    "previous_execution_plan_id": replan_result.previous_execution_plan_id,
+                    "new_execution_plan_id": replan_result.new_execution_plan_id,
+                },
+            )
 
     def _has_applied_halt(self, state: RuntimeGraphState) -> bool:
         return any(
