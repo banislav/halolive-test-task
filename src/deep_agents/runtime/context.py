@@ -17,6 +17,7 @@ from deep_agents.models import (
     TaskCard,
 )
 from deep_agents.models.base import JsonObject
+from deep_agents.runtime.memory_context import build_memory_context
 from deep_agents.runtime.results import TaskRunResult
 from deep_agents.skills import SkillLoader
 
@@ -54,6 +55,7 @@ class TaskExecutionContext(DeepAgentsModel):
     artifacts: list[ArtifactRef] = Field(default_factory=list)
     skill_context: str = ""
     loaded_skill_ids: list[str] = Field(default_factory=list)
+    memory_context: JsonObject = Field(default_factory=dict)
     budget_report: ContextBudgetReport = Field(default_factory=ContextBudgetReport)
     layered_context: LayeredContext = Field(default_factory=LayeredContext)
 
@@ -151,6 +153,12 @@ class ContextAssembler:
             skill_context = self.skill_loader.render_context(task.assigned_to.skills)
 
         artifacts = self._artifact_refs(task, dependency_ids, execution_plan.id)
+        memory_context = build_memory_context(
+            self.memory_store,
+            plan_id=execution_plan.id,
+            task_id=task.id,
+            dependency_task_ids=dependency_ids,
+        )
         plan_context = self._plan_context(task, execution_plan, plan_state, dependency_ids)
         budget_report = self._apply_budget(
             task=task,
@@ -160,6 +168,8 @@ class ContextAssembler:
             artifacts=artifacts,
             skill_context=skill_context,
         )
+        if memory_context:
+            plan_context["memory_context"] = memory_context
         layered_context = LayeredContext(
             global_objective=plan_state.objective.model_dump(mode="json"),
             plan_state={
@@ -179,6 +189,7 @@ class ContextAssembler:
             skill_state={
                 "loaded_skill_ids": loaded_skill_ids,
                 "assigned_skill_ids": [skill.id for skill in task.assigned_to.skills],
+                "skill_memory": memory_context.get("skill", []),
             },
             agent_state={
                 "agent_name": task.assigned_to.name,
@@ -195,6 +206,7 @@ class ContextAssembler:
             artifacts=artifacts,
             skill_context=skill_context,
             loaded_skill_ids=loaded_skill_ids,
+            memory_context=memory_context,
             budget_report=budget_report,
             layered_context=layered_context,
         )

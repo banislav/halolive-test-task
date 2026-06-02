@@ -195,6 +195,11 @@ def test_context_assembler_reads_dependency_results_and_artifacts_from_memory() 
 
     assert context.dependency_results["T1"].output == {"draft": "from memory"}
     assert context.artifacts == [artifact]
+    assert context.memory_context["working"][0]["payload"]["result"]["output"] == {
+        "draft": "from memory"
+    }
+    assert context.memory_context["session"][0]["payload"]["artifact"]["id"] == "A1"
+    assert context.plan_context["memory_context"] == context.memory_context
 
 
 def test_runtime_engine_records_unified_memory_for_run_events() -> None:

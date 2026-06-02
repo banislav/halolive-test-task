@@ -37,6 +37,7 @@ from deep_agents.models import (
 from deep_agents.runtime.command_executor import RuntimeCommandExecutor
 from deep_agents.runtime.context import ContextAssembler, TaskExecutionContext
 from deep_agents.runtime.memory import InMemoryStore, MemoryRecorder, MemoryStore
+from deep_agents.runtime.memory_context import build_memory_context
 from deep_agents.runtime.observability import ProgressSignalBus
 from deep_agents.runtime.plan_tracker import PlanTracker
 from deep_agents.runtime.prompt_handler import PromptHandler
@@ -574,6 +575,7 @@ class RuntimeEngine:
             execution_plan=state["execution_plan"],
             plan_state=state["plan_state"],
             results=state.get("results", {}),
+            memory_context=self._memory_context(state),
             current_task_id=state.get("current_task_id"),
         )
         state.setdefault("prompt_results", []).extend(prompt_results)
@@ -667,6 +669,7 @@ class RuntimeEngine:
                 execution_plan=previous_plan,
                 plan_state=state["plan_state"],
                 results=state.setdefault("results", {}),
+                memory_context=self._memory_context(state),
             )
             state["execution_plan"] = replacement_plan
             state.setdefault("replan_results", []).append(replan_result)
@@ -743,6 +746,20 @@ class RuntimeEngine:
 
     def _sync_memory_state(self, state: RuntimeGraphState) -> None:
         state["memory_records"] = self.memory_store.records()
+
+    def _memory_context(
+        self,
+        state: RuntimeGraphState,
+        *,
+        task_id: str | None = None,
+        dependency_task_ids: list[str] | None = None,
+    ) -> dict[str, Any]:
+        return build_memory_context(
+            self.memory_store,
+            plan_id=state["execution_plan"].id,
+            task_id=task_id or state.get("current_task_id"),
+            dependency_task_ids=dependency_task_ids,
+        )
 
     def _coerce_result(self, task_id: str, value: TaskRunResult | dict[str, Any]) -> TaskRunResult:
         if isinstance(value, TaskRunResult):

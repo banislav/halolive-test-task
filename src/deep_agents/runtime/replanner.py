@@ -40,6 +40,7 @@ class RuntimeReplanner:
         execution_plan: ExecutionPlan,
         plan_state: PlanState,
         results: dict[str, TaskRunResult],
+        memory_context: dict[str, Any] | None = None,
     ) -> tuple[ExecutionPlan, RuntimeReplanResult]:
         """Invoke the planner and reconcile runtime state against its replacement plan."""
         if plan_state.discovery_plan is None:
@@ -57,6 +58,7 @@ class RuntimeReplanner:
             execution_plan=execution_plan,
             plan_state=plan_state,
             results=results,
+            memory_context=memory_context,
         )
 
         try:
@@ -91,6 +93,7 @@ class RuntimeReplanner:
         execution_plan: ExecutionPlan,
         plan_state: PlanState,
         results: dict[str, TaskRunResult],
+        memory_context: dict[str, Any] | None,
     ) -> ExecutionPlannerInput:
         completed_results = {}
         for task_id, result in results.items():
@@ -106,6 +109,7 @@ class RuntimeReplanner:
                 "current_execution_plan": execution_plan.model_dump(mode="json"),
                 "plan_state": plan_state.model_dump(mode="json"),
                 "completed_results": completed_results,
+                "memory_context": memory_context or {},
             },
         )
 
