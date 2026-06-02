@@ -39,7 +39,15 @@ from deep_agents.models.planning import (
     Task,
     TaskStatus,
 )
-from deep_agents.models.prompts import InterruptPriority, PromptCategory, PromptQueueItem
+from deep_agents.models.prompts import (
+    InterruptPriority,
+    PromptCategory,
+    PromptClassification,
+    PromptHandlingResult,
+    PromptQueueItem,
+    PromptReasoningInput,
+    PromptResponse,
+)
 from deep_agents.models.runtime import RuntimeCommand, RuntimeCommandType
 from deep_agents.models.signals import ProgressSignal, ProgressSignalPayload, ProgressSignalType
 from deep_agents.models.skills import (
@@ -91,7 +99,11 @@ __all__ = [
     "ProgressSignalPayload",
     "ProgressSignalType",
     "PromptCategory",
+    "PromptClassification",
+    "PromptHandlingResult",
     "PromptQueueItem",
+    "PromptReasoningInput",
+    "PromptResponse",
     "RetryPolicy",
     "Risk",
     "RuntimeCommand",

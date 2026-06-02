@@ -7,12 +7,17 @@ from deep_agents.config import DeepAgentsSettings
 from deep_agents.langchain import (
     build_checkpoint_judge,
     build_checkpoint_judge_messages,
+    build_content_reasoning_agent,
+    build_content_reasoning_messages,
     build_judge_messages,
+    build_prompt_classifier,
+    build_prompt_classifier_messages,
     build_task_completion_judge,
     build_task_worker,
     build_worker_messages,
 )
 from deep_agents.langchain import judges as judge_module
+from deep_agents.langchain import prompt_handlers as prompt_handler_module
 from deep_agents.langchain import workers as worker_module
 from deep_agents.models import (
     AcceptanceCriterion,
@@ -26,6 +31,11 @@ from deep_agents.models import (
     JudgeVerdict,
     Objective,
     PlanState,
+    PromptCategory,
+    PromptClassification,
+    PromptQueueItem,
+    PromptReasoningInput,
+    PromptResponse,
     SkillAssignment,
     SkillDefinition,
     TaskCard,
@@ -148,6 +158,33 @@ def test_checkpoint_judge_prompt_includes_gate_and_runtime_context() -> None:
     assert '"summary": "Done"' in content
 
 
+def test_prompt_classifier_prompt_includes_prompt_and_json_instruction() -> None:
+    messages = build_prompt_classifier_messages(
+        PromptQueueItem(id="P1", content="What is the status?")
+    )
+
+    content = _joined_message_content(messages)
+    assert "JSON" in content
+    assert "Queued prompt JSON:" in content
+    assert "What is the status?" in content
+
+
+def test_content_reasoning_prompt_includes_runtime_context() -> None:
+    messages = build_content_reasoning_messages(
+        PromptReasoningInput(
+            prompt=PromptQueueItem(id="P1", content="What is done?"),
+            plan_state=PlanState(objective=Objective(raw="Test plan")),
+            results={"T1": {"output": {"summary": "Done"}}},
+        )
+    )
+
+    content = _joined_message_content(messages)
+    assert "JSON" in content
+    assert "Plan state JSON:" in content
+    assert "Completed results JSON:" in content
+    assert '"summary": "Done"' in content
+
+
 def test_task_worker_factory_uses_structured_output() -> None:
     model = StubStructuredChatModel(
         {"task_id": "T1", "output": {"summary": "Done"}, "artifacts": []}
@@ -241,6 +278,39 @@ def test_checkpoint_judge_factory_uses_structured_output() -> None:
     assert result == judgment
 
 
+def test_prompt_classifier_factory_uses_structured_output() -> None:
+    classification = PromptClassification(
+        prompt_id="P1",
+        category=PromptCategory.CONTENT_REASONING,
+        priority=3,
+        reasoning="Prompt asks for status.",
+    )
+    model = StubStructuredChatModel(classification)
+
+    classifier = build_prompt_classifier(model=model)  # type: ignore[arg-type]
+    result = classifier.invoke(PromptQueueItem(id="P1", content="What is the status?"))
+
+    assert model.requested_schema is PromptClassification
+    assert result == classification
+
+
+def test_content_reasoning_factory_uses_structured_output() -> None:
+    response = PromptResponse(prompt_id="P1", answer="Task T1 is complete.")
+    model = StubStructuredChatModel(response)
+
+    reasoner = build_content_reasoning_agent(model=model)  # type: ignore[arg-type]
+    result = reasoner.invoke(
+        PromptReasoningInput(
+            prompt=PromptQueueItem(id="P1", content="What is done?"),
+            plan_state=PlanState(objective=Objective(raw="Test plan")),
+            results={"T1": {"output": {"summary": "Done"}}},
+        )
+    )
+
+    assert model.requested_schema is PromptResponse
+    assert result == response
+
+
 def test_runnable_factories_forward_explicit_settings(monkeypatch) -> None:
     settings = DeepAgentsSettings(provider="openrouter", model="qwen/qwen3.6-flash")
     captured: list[DeepAgentsSettings | None] = []
@@ -299,6 +369,28 @@ def test_checkpoint_judge_factory_forwards_explicit_settings(monkeypatch) -> Non
 
     monkeypatch.setattr(judge_module, "build_chat_model", build_stub_model)
     build_checkpoint_judge(settings=settings)
+
+    assert captured == [settings]
+
+
+def test_prompt_classifier_factory_forwards_explicit_settings(monkeypatch) -> None:
+    settings = DeepAgentsSettings(provider="openrouter", model="qwen/qwen3.6-flash")
+    classification = PromptClassification(
+        prompt_id="P1",
+        category=PromptCategory.CONTENT_REASONING,
+        priority=3,
+        reasoning="Prompt asks for status.",
+    )
+    captured: list[DeepAgentsSettings | None] = []
+
+    def build_stub_model(
+        received_settings: DeepAgentsSettings | None = None,
+    ) -> StubStructuredChatModel:
+        captured.append(received_settings)
+        return StubStructuredChatModel(classification)
+
+    monkeypatch.setattr(prompt_handler_module, "build_chat_model", build_stub_model)
+    build_prompt_classifier(settings=settings)
 
     assert captured == [settings]
 

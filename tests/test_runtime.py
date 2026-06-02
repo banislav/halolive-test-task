@@ -10,6 +10,7 @@ from deep_agents.models import (
     Gate,
     GateDecision,
     GateJudgment,
+    InterruptPriority,
     JudgeRecommendation,
     JudgeVerdict,
     Milestone,
@@ -21,6 +22,7 @@ from deep_agents.models import (
     ProcessAction,
     ProcessAssessment,
     ProcessJudgment,
+    PromptCategory,
     PromptQueueItem,
     RuntimeCommandType,
     Task,
@@ -35,6 +37,7 @@ from deep_agents.runtime import (
     PlanTracker,
     ProcessJudge,
     ProgressSignalBus,
+    PromptHandler,
     PromptQueue,
     RuntimeEngine,
     TaskExecutionContext,
@@ -364,6 +367,57 @@ def test_prompt_queue_places_lifo_interrupts_first() -> None:
     assert queue.pop() is None
 
 
+def test_prompt_queue_drains_in_handling_order() -> None:
+    queue = PromptQueue()
+    queue.push(PromptQueueItem(id="P1", content="Normal feedback", priority=3))
+    queue.push(PromptQueueItem(id="P2", content="Stop now", priority=1))
+    queue.push(PromptQueueItem(id="P3", content="What is done?", priority=3))
+
+    assert [item.id for item in queue.items()] == ["P2", "P1", "P3"]
+    assert [item.id for item in queue.drain()] == ["P2", "P1", "P3"]
+    assert len(queue) == 0
+
+
+def test_prompt_handler_classifies_content_and_plan_update_prompts() -> None:
+    handler = PromptHandler()
+    plan = build_execution_plan()
+    plan_state = PlanState(objective=Objective(raw="Test plan"))
+
+    content = handler.handle_prompt(
+        PromptQueueItem(id="P1", content="What is the current status?"),
+        execution_plan=plan,
+        plan_state=plan_state,
+        results={},
+    )
+    update = handler.handle_prompt(
+        PromptQueueItem(id="P2", content="Change the scope to include security review"),
+        execution_plan=plan,
+        plan_state=plan_state,
+        results={},
+    )
+
+    assert content.classification.category == PromptCategory.CONTENT_REASONING
+    assert content.response is not None
+    assert update.classification.category == PromptCategory.PLAN_UPDATE
+    assert [command.type for command in update.commands] == [RuntimeCommandType.REQUEST_REPLAN]
+
+
+def test_prompt_handler_respects_explicit_prompt_category() -> None:
+    result = PromptHandler().handle_prompt(
+        PromptQueueItem(
+            id="P1",
+            content="What sounds like a question but should change the plan?",
+            category=PromptCategory.PLAN_UPDATE,
+        ),
+        execution_plan=build_execution_plan(),
+        plan_state=PlanState(objective=Objective(raw="Test plan")),
+        results={},
+    )
+
+    assert result.classification.category == PromptCategory.PLAN_UPDATE
+    assert result.classification.reasoning == "Prompt item already included an explicit category."
+
+
 def test_task_run_result_accepts_provider_result_alias_and_status() -> None:
     result = TaskRunResult.model_validate(
         {
@@ -408,6 +462,155 @@ def test_runtime_engine_runs_dependent_tasks_to_completion() -> None:
         "T2": "completed",
     }
     assert list(final_state["results"]) == ["T1", "T2"]
+
+
+def test_runtime_engine_answers_content_prompt_at_dispatch_boundary() -> None:
+    def run_task(task: TaskCard) -> TaskRunResult:
+        return TaskRunResult(task_id=task.id, output={"message": f"ran {task.id}"})
+
+    def judge_task(payload: dict[str, object]) -> JudgeVerdict:
+        result = payload["result"]
+        assert isinstance(result, TaskRunResult)
+        return JudgeVerdict(
+            task_id=result.task_id,
+            verdict="pass",
+            overall_confidence=1.0,
+            recommendation=JudgeRecommendation.ADVANCE,
+        )
+
+    queue = PromptQueue()
+    queue.push(PromptQueueItem(id="P1", content="What is the current status?"))
+    engine = RuntimeEngine(
+        worker=RunnableLambda(run_task),
+        judge=RunnableLambda(judge_task),
+        prompt_queue=queue,
+    )
+
+    final_state = engine.invoke(
+        build_execution_plan(),
+        PlanState(objective=Objective(raw="Test plan")),
+    )
+
+    assert final_state["plan_state"].status == PlanStatus.COMPLETED
+    assert (
+        final_state["prompt_results"][0].classification.category
+        == PromptCategory.CONTENT_REASONING
+    )
+    assert final_state["prompt_results"][0].response is not None
+    assert final_state["runtime_commands"] == []
+
+
+def test_runtime_engine_records_plan_update_prompt_command() -> None:
+    def run_task(task: TaskCard) -> TaskRunResult:
+        return TaskRunResult(task_id=task.id, output={"message": f"ran {task.id}"})
+
+    def judge_task(payload: dict[str, object]) -> JudgeVerdict:
+        result = payload["result"]
+        assert isinstance(result, TaskRunResult)
+        return JudgeVerdict(
+            task_id=result.task_id,
+            verdict="pass",
+            overall_confidence=1.0,
+            recommendation=JudgeRecommendation.ADVANCE,
+        )
+
+    queue = PromptQueue()
+    queue.push(PromptQueueItem(id="P1", content="Change the scope to include security review"))
+    engine = RuntimeEngine(
+        worker=RunnableLambda(run_task),
+        judge=RunnableLambda(judge_task),
+        prompt_queue=queue,
+    )
+
+    final_state = engine.invoke(
+        build_execution_plan(),
+        PlanState(objective=Objective(raw="Test plan")),
+    )
+
+    assert final_state["prompt_results"][0].classification.category == PromptCategory.PLAN_UPDATE
+    assert any(
+        command.type == RuntimeCommandType.REQUEST_REPLAN
+        for command in final_state["runtime_commands"]
+    )
+    assert final_state["plan_state"].status == PlanStatus.COMPLETED
+
+
+def test_runtime_engine_records_p1_pause_prompt_command() -> None:
+    def run_task(task: TaskCard) -> TaskRunResult:
+        return TaskRunResult(task_id=task.id, output={"message": f"ran {task.id}"})
+
+    def judge_task(payload: dict[str, object]) -> JudgeVerdict:
+        result = payload["result"]
+        assert isinstance(result, TaskRunResult)
+        return JudgeVerdict(
+            task_id=result.task_id,
+            verdict="pass",
+            overall_confidence=1.0,
+            recommendation=JudgeRecommendation.ADVANCE,
+        )
+
+    queue = PromptQueue()
+    queue.push(
+        PromptQueueItem(
+            id="P1",
+            content="What is the current status?",
+            priority=InterruptPriority.P1_PAUSE,
+        )
+    )
+    engine = RuntimeEngine(
+        worker=RunnableLambda(run_task),
+        judge=RunnableLambda(judge_task),
+        prompt_queue=queue,
+    )
+
+    final_state = engine.invoke(
+        build_execution_plan(),
+        PlanState(objective=Objective(raw="Test plan")),
+    )
+
+    assert (
+        final_state["prompt_results"][0].classification.category
+        == PromptCategory.CONTENT_REASONING
+    )
+    assert any(
+        command.type == RuntimeCommandType.PAUSE_TASK
+        for command in final_state["runtime_commands"]
+    )
+    assert final_state["plan_state"].status == PlanStatus.COMPLETED
+
+
+def test_runtime_engine_halts_dispatch_for_p0_prompt() -> None:
+    def run_task(_: TaskCard) -> TaskRunResult:
+        raise AssertionError("worker should not run after P0 halt")
+
+    def judge_task(_: dict[str, object]) -> JudgeVerdict:
+        raise AssertionError("judge should not run after P0 halt")
+
+    queue = PromptQueue()
+    queue.push(
+        PromptQueueItem(
+            id="P1",
+            content="Halt execution now",
+            priority=InterruptPriority.P0_HALT,
+        )
+    )
+    engine = RuntimeEngine(
+        worker=RunnableLambda(run_task),
+        judge=RunnableLambda(judge_task),
+        prompt_queue=queue,
+    )
+
+    final_state = engine.invoke(
+        build_execution_plan(),
+        PlanState(objective=Objective(raw="Test plan")),
+    )
+
+    assert final_state["results"] == {}
+    assert any(
+        command.type == RuntimeCommandType.HALT
+        for command in final_state["runtime_commands"]
+    )
+    assert final_state["plan_state"].task_statuses == {"T1": "ready", "T2": "blocked"}
 
 
 def test_runtime_engine_can_send_assembled_context_to_workers() -> None:

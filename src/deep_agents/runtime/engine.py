@@ -19,12 +19,20 @@ from deep_agents.models import (
     ProgressSignal,
     ProgressSignalPayload,
     ProgressSignalType,
+    PromptClassification,
+    PromptHandlingResult,
+    PromptQueueItem,
+    PromptReasoningInput,
+    PromptResponse,
     RuntimeCommand,
+    RuntimeCommandType,
     TaskCard,
 )
 from deep_agents.runtime.context import ContextAssembler, TaskExecutionContext
 from deep_agents.runtime.observability import ProgressSignalBus
 from deep_agents.runtime.plan_tracker import PlanTracker
+from deep_agents.runtime.prompt_handler import PromptHandler
+from deep_agents.runtime.prompt_queue import PromptQueue
 from deep_agents.runtime.results import TaskRunResult
 
 logger = get_logger(__name__)
@@ -42,6 +50,7 @@ class RuntimeGraphState(TypedDict):
     process_judgments: NotRequired[list[ProcessJudgment]]
     observer_judgments: NotRequired[list[ObserverJudgment]]
     gate_judgments: NotRequired[list[GateJudgment]]
+    prompt_results: NotRequired[list[PromptHandlingResult]]
     runtime_commands: NotRequired[list[RuntimeCommand]]
 
 
@@ -54,6 +63,11 @@ class RuntimeEngine:
         judge: Runnable[dict[str, Any], JudgeVerdict | dict[str, Any]],
         checkpoint_judge: Runnable[dict[str, Any], GateJudgment | dict[str, Any]] | None = None,
         context_assembler: ContextAssembler | None = None,
+        prompt_queue: PromptQueue | None = None,
+        prompt_classifier: Runnable[PromptQueueItem, PromptClassification | dict[str, Any]]
+        | None = None,
+        content_reasoner: Runnable[PromptReasoningInput, PromptResponse | dict[str, Any]]
+        | None = None,
         progress_bus: ProgressSignalBus | None = None,
         recursion_limit: int = 100,
     ) -> None:
@@ -62,6 +76,11 @@ class RuntimeEngine:
         self.judge = judge
         self.checkpoint_judge = checkpoint_judge
         self.context_assembler = context_assembler
+        self.prompt_queue = prompt_queue
+        self.prompt_handler = PromptHandler(
+            prompt_classifier=prompt_classifier,
+            content_reasoner=content_reasoner,
+        )
         self.progress_bus = progress_bus or ProgressSignalBus()
         self.recursion_limit = recursion_limit
         self.graph = self._build_graph()
@@ -83,6 +102,7 @@ class RuntimeEngine:
             "process_judgments": [],
             "observer_judgments": [],
             "gate_judgments": [],
+            "prompt_results": [],
             "runtime_commands": [],
         }
         try:
@@ -126,6 +146,7 @@ class RuntimeEngine:
             "process_judgments": [],
             "observer_judgments": [],
             "gate_judgments": [],
+            "prompt_results": [],
             "runtime_commands": [],
         }
         try:
@@ -174,6 +195,10 @@ class RuntimeEngine:
             tracker = PlanTracker(state["plan_state"], state["execution_plan"])
 
             if self._is_terminal(tracker.state.status):
+                state["current_task_id"] = None
+                return state
+
+            if self._handle_prompt_queue(state):
                 state["current_task_id"] = None
                 return state
 
@@ -446,6 +471,36 @@ class RuntimeEngine:
         if state.get("current_task_id") is None:
             return "end"
         return "worker"
+
+    def _handle_prompt_queue(self, state: RuntimeGraphState) -> bool:
+        if self.prompt_queue is None or len(self.prompt_queue) == 0:
+            return False
+
+        prompt_results = self.prompt_handler.handle_queue(
+            self.prompt_queue,
+            execution_plan=state["execution_plan"],
+            plan_state=state["plan_state"],
+            results=state.get("results", {}),
+            current_task_id=state.get("current_task_id"),
+        )
+        state.setdefault("prompt_results", []).extend(prompt_results)
+
+        commands = [
+            command
+            for result in prompt_results
+            for command in result.commands
+        ]
+        if commands:
+            state.setdefault("runtime_commands", []).extend(commands)
+        logger.info(
+            "prompt queue handled",
+            extra={
+                "prompt_count": len(prompt_results),
+                "command_count": len(commands),
+                "command_types": [command.type for command in commands],
+            },
+        )
+        return any(command.type == RuntimeCommandType.HALT for command in commands)
 
     def _current_task(self, state: RuntimeGraphState) -> TaskCard:
         task_id = state.get("current_task_id")

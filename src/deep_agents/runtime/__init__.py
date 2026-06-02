@@ -18,6 +18,7 @@ from deep_agents.runtime.events import (
 )
 from deep_agents.runtime.observability import ObserverJudge, ProcessJudge, ProgressSignalBus
 from deep_agents.runtime.plan_tracker import PlanTracker
+from deep_agents.runtime.prompt_handler import PromptHandler
 from deep_agents.runtime.prompt_queue import PromptQueue
 from deep_agents.runtime.results import TaskRunResult
 
@@ -32,6 +33,7 @@ __all__ = [
     "ProcessJudge",
     "ProgressSignalBus",
     "ProgressSignalReceived",
+    "PromptHandler",
     "PromptQueue",
     "RuntimeEvent",
     "RuntimeEngine",

@@ -11,6 +11,8 @@ from deep_agents.models import (
     Milestone,
     PlannerInput,
     PlanState,
+    PromptQueueItem,
+    PromptReasoningInput,
     TaskCard,
 )
 from deep_agents.runtime import TaskExecutionContext, TaskRunResult
@@ -52,6 +54,19 @@ Use decision "open" when the gate condition is satisfied.
 Use decision "hold" when execution should wait for more information or incomplete work.
 Use decision "reject" when the checkpoint failed and replanning is needed.
 Use decision "escalate" when human input is required."""
+
+PROMPT_CLASSIFIER_SYSTEM_PROMPT = """You are PromptClassifierAgent.
+Classify a queued user prompt as content_reasoning or plan_update.
+Return only valid JSON matching the PromptClassification schema.
+Use this JSON shape: {"prompt_id": "...", "category": "content_reasoning",
+"priority": 3, "reasoning": "..."}."""
+
+CONTENT_REASONING_SYSTEM_PROMPT = """You are a read-only content reasoning agent.
+Answer the queued user prompt using only current plan state and completed results.
+Never mutate plan state or request actions.
+Return only valid JSON matching the PromptResponse schema.
+Use this JSON shape: {"prompt_id": "...", "answer": "...",
+"referenced_task_ids": [], "referenced_artifact_ids": []}."""
 
 
 def build_initial_planner_messages(planner_input: PlannerInput) -> list[BaseMessage]:
@@ -174,6 +189,54 @@ def build_checkpoint_judge_messages(
                         '{"gate_id": "...", "milestone_id": "...", "decision": "open", '
                         '"criteria_results": [], "overall_confidence": 0.0, '
                         '"reasoning": "...", "actions": []}'
+                    ),
+                ]
+            )
+        ),
+    ]
+
+
+def build_prompt_classifier_messages(prompt: PromptQueueItem) -> list[BaseMessage]:
+    """Build LangChain messages for classifying a queued user prompt."""
+    return [
+        SystemMessage(content=PROMPT_CLASSIFIER_SYSTEM_PROMPT),
+        HumanMessage(
+            content="\n".join(
+                [
+                    "Queued prompt JSON:",
+                    prompt.model_dump_json(indent=2),
+                    "Expected JSON top-level shape:",
+                    (
+                        '{"prompt_id": "...", "category": "content_reasoning", '
+                        '"priority": 3, "reasoning": "..."}'
+                    ),
+                ]
+            )
+        ),
+    ]
+
+
+def build_content_reasoning_messages(
+    reasoning_input: PromptReasoningInput,
+) -> list[BaseMessage]:
+    """Build LangChain messages for answering a read-only queued prompt."""
+    return [
+        SystemMessage(content=CONTENT_REASONING_SYSTEM_PROMPT),
+        HumanMessage(
+            content="\n\n".join(
+                [
+                    "Queued prompt JSON:",
+                    reasoning_input.prompt.model_dump_json(indent=2),
+                    "Plan state JSON:",
+                    reasoning_input.plan_state.model_dump_json(indent=2),
+                    "Completed results JSON:",
+                    json.dumps(reasoning_input.results, indent=2),
+                    "Context JSON:",
+                    json.dumps(reasoning_input.context, indent=2),
+                    "Expected JSON top-level shape:",
+                    (
+                        '{"prompt_id": "...", "answer": "...", '
+                        '"referenced_task_ids": [], "referenced_artifact_ids": []}'
                     ),
                 ]
             )
