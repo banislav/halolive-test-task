@@ -9,6 +9,7 @@ from deep_agents.models.base import DeepAgentsModel, JsonObject, utc_now
 
 class RuntimeCommandType(StrEnum):
     ADJUST_TIMEOUT = "adjust_timeout"
+    HALT = "halt"
     HOLD_GATE = "hold_gate"
     TERMINATE_TASK = "terminate_task"
     MARK_EARLY_COMPLETE = "mark_early_complete"

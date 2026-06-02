@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import Iterator
 
 from deep_agents.models import InterruptPriority, PromptQueueItem
 
@@ -26,6 +27,19 @@ class PromptQueue:
         if not self._queue:
             return None
         return self._queue[0]
+
+    def items(self) -> list[PromptQueueItem]:
+        """Return queued prompts in handling order without mutating the queue."""
+        return list(self._queue)
+
+    def drain(self) -> list[PromptQueueItem]:
+        """Remove and return all queued prompts in deterministic handling order."""
+        items = self.items()
+        self._queue.clear()
+        return items
+
+    def __iter__(self) -> Iterator[PromptQueueItem]:
+        return iter(self.items())
 
     def __len__(self) -> int:
         return len(self._queue)
