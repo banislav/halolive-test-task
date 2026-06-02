@@ -13,7 +13,7 @@ from deep_agents.models import (
     PlanState,
     TaskCard,
 )
-from deep_agents.runtime import TaskRunResult
+from deep_agents.runtime import TaskExecutionContext, TaskRunResult
 
 INITIAL_PLANNER_SYSTEM_PROMPT = """You are InitialPlannerAgent.
 Transform a raw user objective into a DiscoveryPlan.
@@ -108,9 +108,16 @@ def build_execution_planner_messages(planner_input: ExecutionPlannerInput) -> li
     ]
 
 
-def build_worker_messages(task: TaskCard, skill_context: str | None = None) -> list[BaseMessage]:
+def build_worker_messages(
+    task_input: TaskCard | TaskExecutionContext,
+    skill_context: str | None = None,
+) -> list[BaseMessage]:
     """Build LangChain messages for executing a task card."""
-    human_sections = [_task_card_text(task)]
+    if isinstance(task_input, TaskExecutionContext):
+        skill_context = skill_context if skill_context is not None else task_input.skill_context
+        human_sections = [_task_execution_context_text(task_input)]
+    else:
+        human_sections = [_task_card_text(task_input)]
     if skill_context:
         human_sections.extend(["", skill_context])
     return [
@@ -186,6 +193,32 @@ def _task_card_text(task: TaskCard) -> str:
             criteria or "- No explicit criteria provided",
             "Assigned skills:",
             skills or "- No skills assigned",
+        ]
+    )
+
+
+def _task_execution_context_text(context: TaskExecutionContext) -> str:
+    dependency_results = {
+        task_id: result.model_dump(mode="json")
+        for task_id, result in context.dependency_results.items()
+    }
+    prior_summaries = [
+        result.model_dump(mode="json") for result in context.prior_result_summaries
+    ]
+    artifacts = [artifact.model_dump(mode="json") for artifact in context.artifacts]
+    return "\n\n".join(
+        [
+            "Objective:",
+            context.objective.raw,
+            _task_card_text(context.task),
+            "Plan context JSON:",
+            json.dumps(context.plan_context, indent=2),
+            "Direct dependency results JSON:",
+            json.dumps(dependency_results, indent=2),
+            "Prior result summaries JSON:",
+            json.dumps(prior_summaries, indent=2),
+            "Relevant artifacts JSON:",
+            json.dumps(artifacts, indent=2),
         ]
     )
 

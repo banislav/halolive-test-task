@@ -29,6 +29,7 @@ from deep_agents.models import (
     Wave,
 )
 from deep_agents.runtime import (
+    ContextAssembler,
     Dispatcher,
     ObserverJudge,
     PlanTracker,
@@ -36,6 +37,7 @@ from deep_agents.runtime import (
     ProgressSignalBus,
     PromptQueue,
     RuntimeEngine,
+    TaskExecutionContext,
     TaskRunResult,
 )
 
@@ -406,6 +408,45 @@ def test_runtime_engine_runs_dependent_tasks_to_completion() -> None:
         "T2": "completed",
     }
     assert list(final_state["results"]) == ["T1", "T2"]
+
+
+def test_runtime_engine_can_send_assembled_context_to_workers() -> None:
+    captured_contexts: list[TaskExecutionContext] = []
+
+    def run_task(context: TaskExecutionContext) -> TaskRunResult:
+        captured_contexts.append(context)
+        if context.task.id == "T2":
+            assert context.dependency_results["T1"].output == {"message": "ran T1"}
+        return TaskRunResult(
+            task_id=context.task.id,
+            output={"message": f"ran {context.task.id}"},
+        )
+
+    def judge_task(payload: dict[str, object]) -> JudgeVerdict:
+        result = payload["result"]
+        assert isinstance(result, TaskRunResult)
+        return JudgeVerdict(
+            task_id=result.task_id,
+            verdict="pass",
+            overall_confidence=1.0,
+            recommendation=JudgeRecommendation.ADVANCE,
+        )
+
+    engine = RuntimeEngine(
+        worker=RunnableLambda(run_task),
+        judge=RunnableLambda(judge_task),
+        context_assembler=ContextAssembler(),
+    )
+
+    final_state = engine.invoke(
+        build_execution_plan(),
+        PlanState(objective=Objective(raw="Test plan")),
+    )
+
+    assert final_state["plan_state"].status == PlanStatus.COMPLETED
+    assert [context.task.id for context in captured_contexts] == ["T1", "T2"]
+    assert captured_contexts[0].dependency_results == {}
+    assert list(captured_contexts[1].dependency_results) == ["T1"]
 
 
 def test_runtime_engine_evaluates_completed_milestone_checkpoint_gate() -> None:

@@ -22,6 +22,7 @@ from deep_agents.models import (
     RuntimeCommand,
     TaskCard,
 )
+from deep_agents.runtime.context import ContextAssembler, TaskExecutionContext
 from deep_agents.runtime.observability import ProgressSignalBus
 from deep_agents.runtime.plan_tracker import PlanTracker
 from deep_agents.runtime.results import TaskRunResult
@@ -34,6 +35,7 @@ class RuntimeGraphState(TypedDict):
     execution_plan: ExecutionPlan
     plan_state: PlanState
     current_task_id: NotRequired[str | None]
+    current_context: NotRequired[TaskExecutionContext | None]
     latest_result: NotRequired[TaskRunResult | None]
     latest_verdict: NotRequired[JudgeVerdict | None]
     results: NotRequired[dict[str, TaskRunResult]]
@@ -48,9 +50,10 @@ class RuntimeEngine:
     def __init__(
         self,
         *,
-        worker: Runnable[TaskCard, TaskRunResult | dict[str, Any]],
+        worker: Runnable[TaskCard | TaskExecutionContext, TaskRunResult | dict[str, Any]],
         judge: Runnable[dict[str, Any], JudgeVerdict | dict[str, Any]],
         checkpoint_judge: Runnable[dict[str, Any], GateJudgment | dict[str, Any]] | None = None,
+        context_assembler: ContextAssembler | None = None,
         progress_bus: ProgressSignalBus | None = None,
         recursion_limit: int = 100,
     ) -> None:
@@ -58,6 +61,7 @@ class RuntimeEngine:
         self.worker = worker
         self.judge = judge
         self.checkpoint_judge = checkpoint_judge
+        self.context_assembler = context_assembler
         self.progress_bus = progress_bus or ProgressSignalBus()
         self.recursion_limit = recursion_limit
         self.graph = self._build_graph()
@@ -72,6 +76,7 @@ class RuntimeEngine:
             "execution_plan": execution_plan,
             "plan_state": plan_state,
             "current_task_id": None,
+            "current_context": None,
             "latest_result": None,
             "latest_verdict": None,
             "results": {},
@@ -114,6 +119,7 @@ class RuntimeEngine:
             "execution_plan": execution_plan,
             "plan_state": plan_state,
             "current_task_id": None,
+            "current_context": None,
             "latest_result": None,
             "latest_verdict": None,
             "results": {},
@@ -214,7 +220,7 @@ class RuntimeEngine:
                 signal_type=ProgressSignalType.HEARTBEAT,
                 payload=ProgressSignalPayload(status="worker_started"),
             )
-            result = self.worker.invoke(task)
+            result = self.worker.invoke(self._worker_input(task, state))
             state["latest_result"] = self._coerce_result(task.id, result)
             self._publish_signal(
                 state,
@@ -260,7 +266,7 @@ class RuntimeEngine:
                 signal_type=ProgressSignalType.HEARTBEAT,
                 payload=ProgressSignalPayload(status="worker_started"),
             )
-            result = await self.worker.ainvoke(task)
+            result = await self.worker.ainvoke(self._worker_input(task, state))
             state["latest_result"] = self._coerce_result(task.id, result)
             self._publish_signal(
                 state,
@@ -413,6 +419,7 @@ class RuntimeEngine:
                 ),
             )
             state["current_task_id"] = None
+            state["current_context"] = None
             state["latest_result"] = None
             state["latest_verdict"] = None
             return state
@@ -452,6 +459,31 @@ class RuntimeEngine:
             logger.error(msg)
             raise RuntimeError(msg)
         return tracker.dispatcher.get_task(task_id)
+
+    def _worker_input(
+        self,
+        task: TaskCard,
+        state: RuntimeGraphState,
+    ) -> TaskCard | TaskExecutionContext:
+        if self.context_assembler is None:
+            return task
+        context = self.context_assembler.assemble(
+            task=task,
+            execution_plan=state["execution_plan"],
+            plan_state=state["plan_state"],
+            results=state.get("results", {}),
+        )
+        state["current_context"] = context
+        logger.info(
+            "worker context assembled",
+            extra={
+                "task_id": task.id,
+                "dependency_count": len(context.dependency_results),
+                "artifact_count": len(context.artifacts),
+                "loaded_skill_count": len(context.loaded_skill_ids),
+            },
+        )
+        return context
 
     def _is_terminal(self, status: PlanStatus | str) -> bool:
         return PlanStatus(status) in {PlanStatus.COMPLETED, PlanStatus.FAILED, PlanStatus.PAUSED}

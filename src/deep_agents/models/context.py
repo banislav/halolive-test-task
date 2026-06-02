@@ -4,7 +4,7 @@ from enum import StrEnum
 
 from pydantic import Field
 
-from deep_agents.models.base import DeepAgentsModel, JsonObject
+from deep_agents.models.base import DeepAgentsModel, JsonObject, TimestampedModel
 
 
 class ArtifactKind(StrEnum):
@@ -20,6 +20,13 @@ class ArtifactRef(DeepAgentsModel):
     kind: ArtifactKind
     uri: str
     summary: str | None = None
+    metadata: JsonObject = Field(default_factory=dict)
+
+
+class ArtifactRecord(TimestampedModel):
+    ref: ArtifactRef
+    producer_task_id: str | None = None
+    tags: list[str] = Field(default_factory=list)
     metadata: JsonObject = Field(default_factory=dict)
 
 

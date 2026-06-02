@@ -2,7 +2,7 @@
 
 from deep_agents.models.agents import AgentAssignment, AgentKind, AgentLifecycleState
 from deep_agents.models.base import DeepAgentsModel
-from deep_agents.models.context import ArtifactRef, ContextBudget, LayeredContext
+from deep_agents.models.context import ArtifactRecord, ArtifactRef, ContextBudget, LayeredContext
 from deep_agents.models.execution import (
     DependencyGraph,
     ExecutionPlan,
@@ -58,6 +58,7 @@ __all__ = [
     "AgentAssignment",
     "AgentKind",
     "AgentLifecycleState",
+    "ArtifactRecord",
     "ArtifactRef",
     "Clarification",
     "ContextBudget",
