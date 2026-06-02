@@ -53,6 +53,8 @@ from deep_agents.models.runtime import (
     RuntimeCommandResult,
     RuntimeCommandStatus,
     RuntimeCommandType,
+    RuntimeReplanResult,
+    RuntimeReplanStatus,
 )
 from deep_agents.models.signals import ProgressSignal, ProgressSignalPayload, ProgressSignalType
 from deep_agents.models.skills import (
@@ -115,6 +117,8 @@ __all__ = [
     "RuntimeCommandResult",
     "RuntimeCommandStatus",
     "RuntimeCommandType",
+    "RuntimeReplanResult",
+    "RuntimeReplanStatus",
     "SkillAssignment",
     "SkillContextCost",
     "SkillDefinition",

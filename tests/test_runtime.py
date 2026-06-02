@@ -7,6 +7,7 @@ from deep_agents.models import (
     AgentKind,
     DiscoveryPlan,
     ExecutionPlan,
+    ExecutionPlannerInput,
     Gate,
     GateDecision,
     GateJudgment,
@@ -25,8 +26,10 @@ from deep_agents.models import (
     PromptCategory,
     PromptQueueItem,
     RuntimeCommand,
+    RuntimeCommandResult,
     RuntimeCommandStatus,
     RuntimeCommandType,
+    RuntimeReplanStatus,
     Task,
     TaskCard,
     TaskStatus,
@@ -43,6 +46,7 @@ from deep_agents.runtime import (
     PromptQueue,
     RuntimeCommandExecutor,
     RuntimeEngine,
+    RuntimeReplanner,
     TaskExecutionContext,
     TaskRunResult,
 )
@@ -62,6 +66,28 @@ def build_execution_plan() -> ExecutionPlan:
             TaskCard(
                 id="T2",
                 name="Second task",
+                wave=1,
+                blocked_by=["T1"],
+                assigned_to=assignment,
+            ),
+        ],
+    )
+
+
+def build_replanned_execution_plan() -> ExecutionPlan:
+    assignment = AgentAssignment(type=AgentKind.WORKER, name="Worker")
+    return ExecutionPlan(
+        id="EP2",
+        objective="Test plan",
+        waves=[
+            Wave(index=0, task_ids=["T1"]),
+            Wave(index=1, task_ids=["T3"]),
+        ],
+        task_cards=[
+            TaskCard(id="T1", name="Revised first task", wave=0, assigned_to=assignment),
+            TaskCard(
+                id="T3",
+                name="Replacement task",
                 wave=1,
                 blocked_by=["T1"],
                 assigned_to=assignment,
@@ -90,6 +116,19 @@ def build_plan_state_with_gate(
             gates=[Gate(id="G1", condition="First milestone task is complete")],
         ),
         checkpoint_ids=checkpoint_ids or [],
+    )
+
+
+def build_replan_trigger() -> RuntimeCommandResult:
+    return RuntimeCommandExecutor().execute(
+        RuntimeCommand(
+            type=RuntimeCommandType.REQUEST_REPLAN,
+            task_id="T1",
+            reason="Needs a replacement plan.",
+            source="test",
+        ),
+        plan_state=PlanState(objective=Objective(raw="Test plan")),
+        execution_plan=build_execution_plan(),
     )
 
 
@@ -488,6 +527,96 @@ def test_runtime_command_executor_ignores_advisory_commands() -> None:
     assert plan_state.status == PlanStatus.INITIALIZING
 
 
+def test_runtime_replanner_builds_input_and_reconciles_replacement_plan() -> None:
+    captured_inputs: list[ExecutionPlannerInput] = []
+
+    def plan_replacement(planner_input: ExecutionPlannerInput) -> dict[str, object]:
+        captured_inputs.append(planner_input)
+        return build_replanned_execution_plan().model_dump(mode="json")
+
+    plan = build_execution_plan()
+    plan_state = build_plan_state_with_gate()
+    plan_state.task_statuses = {
+        "T1": TaskStatus.COMPLETED,
+        "T2": TaskStatus.PAUSED,
+    }
+    results = {
+        "T1": TaskRunResult(task_id="T1", output={"message": "finished T1"}),
+        "T2": TaskRunResult(task_id="T2", output={"message": "paused T2"}),
+    }
+    replanner = RuntimeReplanner(
+        RunnableLambda(plan_replacement),
+        available_tools=["search"],
+        available_skills=["technical_writing"],
+    )
+
+    replacement, result = replanner.replan(
+        trigger=build_replan_trigger(),
+        execution_plan=plan,
+        plan_state=plan_state,
+        results=results,
+    )
+
+    assert replacement.id == "EP2"
+    assert result.status == RuntimeReplanStatus.APPLIED
+    assert result.previous_execution_plan_id == "EP1"
+    assert result.new_execution_plan_id == "EP2"
+    assert plan_state.execution_plan_id == "EP2"
+    assert plan_state.task_statuses == {
+        "T1": TaskStatus.COMPLETED,
+        "T3": TaskStatus.READY,
+    }
+    assert list(results) == ["T1"]
+    assert captured_inputs[0].discovery_plan == plan_state.discovery_plan
+    assert captured_inputs[0].available_tools == ["search"]
+    assert captured_inputs[0].available_skills == ["technical_writing"]
+    assert "completed_results" in captured_inputs[0].context
+
+
+def test_runtime_replanner_skips_without_discovery_plan() -> None:
+    plan = build_execution_plan()
+    plan_state = PlanState(objective=Objective(raw="Test plan"))
+
+    def plan_replacement(_: ExecutionPlannerInput) -> ExecutionPlan:
+        raise AssertionError("planner should not run without discovery plan")
+
+    replacement, result = RuntimeReplanner(RunnableLambda(plan_replacement)).replan(
+        trigger=build_replan_trigger(),
+        execution_plan=plan,
+        plan_state=plan_state,
+        results={},
+    )
+
+    assert replacement is plan
+    assert result.status == RuntimeReplanStatus.SKIPPED
+    assert result.previous_execution_plan_id == "EP1"
+    assert result.new_execution_plan_id is None
+    assert plan_state.execution_plan_id is None
+
+
+def test_runtime_replanner_failure_leaves_current_plan_unchanged() -> None:
+    plan = build_execution_plan()
+    plan_state = build_plan_state_with_gate()
+    plan_state.task_statuses = {"T1": TaskStatus.COMPLETED, "T2": TaskStatus.READY}
+    results = {"T1": TaskRunResult(task_id="T1", output={"message": "finished T1"})}
+
+    def fail_replan(_: ExecutionPlannerInput) -> ExecutionPlan:
+        raise RuntimeError("planner exploded")
+
+    replacement, result = RuntimeReplanner(RunnableLambda(fail_replan)).replan(
+        trigger=build_replan_trigger(),
+        execution_plan=plan,
+        plan_state=plan_state,
+        results=results,
+    )
+
+    assert replacement is plan
+    assert result.status == RuntimeReplanStatus.FAILED
+    assert "planner exploded" in result.reason
+    assert plan_state.task_statuses == {"T1": TaskStatus.COMPLETED, "T2": TaskStatus.READY}
+    assert list(results) == ["T1"]
+
+
 def test_prompt_queue_places_lifo_interrupts_first() -> None:
     queue = PromptQueue()
     queue.push(PromptQueueItem(id="P1", content="Normal feedback", priority=3))
@@ -596,6 +725,52 @@ def test_runtime_engine_runs_dependent_tasks_to_completion() -> None:
     assert list(final_state["results"]) == ["T1", "T2"]
 
 
+def test_runtime_engine_replans_after_task_judge_recommendation() -> None:
+    judge_calls: dict[str, int] = {}
+
+    def run_task(task: TaskCard) -> TaskRunResult:
+        return TaskRunResult(task_id=task.id, output={"message": f"ran {task.id}"})
+
+    def judge_task(payload: dict[str, object]) -> JudgeVerdict:
+        result = payload["result"]
+        assert isinstance(result, TaskRunResult)
+        judge_calls[result.task_id] = judge_calls.get(result.task_id, 0) + 1
+        if result.task_id == "T1" and judge_calls[result.task_id] == 1:
+            return JudgeVerdict(
+                task_id=result.task_id,
+                verdict="fail",
+                overall_confidence=0.7,
+                recommendation=JudgeRecommendation.REPLAN,
+            )
+        return JudgeVerdict(
+            task_id=result.task_id,
+            verdict="pass",
+            overall_confidence=1.0,
+            recommendation=JudgeRecommendation.ADVANCE,
+        )
+
+    engine = RuntimeEngine(
+        worker=RunnableLambda(run_task),
+        judge=RunnableLambda(judge_task),
+        runtime_replanner=RuntimeReplanner(
+            RunnableLambda(lambda _: build_replanned_execution_plan())
+        ),
+    )
+
+    final_state = engine.invoke(build_execution_plan(), build_plan_state_with_gate())
+
+    assert final_state["execution_plan"].id == "EP2"
+    assert [command.type for command in final_state["runtime_commands"]] == [
+        RuntimeCommandType.REQUEST_REPLAN
+    ]
+    assert final_state["replan_results"][0].status == RuntimeReplanStatus.APPLIED
+    assert final_state["plan_state"].task_statuses == {
+        "T1": "completed",
+        "T3": "completed",
+    }
+    assert judge_calls["T1"] == 2
+
+
 def test_runtime_engine_answers_content_prompt_at_dispatch_boundary() -> None:
     def run_task(task: TaskCard) -> TaskRunResult:
         return TaskRunResult(task_id=task.id, output={"message": f"ran {task.id}"})
@@ -670,6 +845,49 @@ def test_runtime_engine_records_plan_update_prompt_command() -> None:
         for result in final_state["command_results"]
     )
     assert final_state["plan_state"].status == PlanStatus.COMPLETED
+
+
+def test_runtime_engine_replans_after_plan_update_prompt() -> None:
+    captured_inputs: list[ExecutionPlannerInput] = []
+
+    def run_task(task: TaskCard) -> TaskRunResult:
+        return TaskRunResult(task_id=task.id, output={"message": f"ran {task.id}"})
+
+    def judge_task(payload: dict[str, object]) -> JudgeVerdict:
+        result = payload["result"]
+        assert isinstance(result, TaskRunResult)
+        return JudgeVerdict(
+            task_id=result.task_id,
+            verdict="pass",
+            overall_confidence=1.0,
+            recommendation=JudgeRecommendation.ADVANCE,
+        )
+
+    def plan_replacement(planner_input: ExecutionPlannerInput) -> ExecutionPlan:
+        captured_inputs.append(planner_input)
+        return build_replanned_execution_plan()
+
+    queue = PromptQueue()
+    queue.push(PromptQueueItem(id="P1", content="Change the scope to include security review"))
+    engine = RuntimeEngine(
+        worker=RunnableLambda(run_task),
+        judge=RunnableLambda(judge_task),
+        prompt_queue=queue,
+        runtime_replanner=RuntimeReplanner(RunnableLambda(plan_replacement)),
+    )
+
+    final_state = engine.invoke(build_execution_plan(), build_plan_state_with_gate())
+
+    assert final_state["execution_plan"].id == "EP2"
+    assert final_state["plan_state"].execution_plan_id == "EP2"
+    assert final_state["plan_state"].task_statuses == {
+        "T1": "completed",
+        "T3": "completed",
+    }
+    assert [result.status for result in final_state["replan_results"]] == [
+        RuntimeReplanStatus.APPLIED
+    ]
+    assert captured_inputs[0].context["trigger"]["command"]["source"] == "prompt_queue"
 
 
 def test_runtime_engine_records_p1_pause_prompt_command() -> None:
@@ -890,6 +1108,49 @@ def test_runtime_engine_records_checkpoint_gate_command_decisions() -> None:
         assert any(command.type == command_type for command in final_state["runtime_commands"])
 
 
+def test_runtime_engine_replans_after_checkpoint_gate_reject() -> None:
+    def run_task(task: TaskCard) -> TaskRunResult:
+        return TaskRunResult(task_id=task.id, output={"message": f"ran {task.id}"})
+
+    def judge_task(payload: dict[str, object]) -> JudgeVerdict:
+        result = payload["result"]
+        assert isinstance(result, TaskRunResult)
+        return JudgeVerdict(
+            task_id=result.task_id,
+            verdict="pass",
+            overall_confidence=1.0,
+            recommendation=JudgeRecommendation.ADVANCE,
+        )
+
+    def reject_gate(_: dict[str, object]) -> GateJudgment:
+        return GateJudgment(
+            gate_id="G1",
+            milestone_id="M1",
+            decision=GateDecision.REJECT,
+            overall_confidence=0.8,
+            reasoning="Milestone needs replanning.",
+        )
+
+    engine = RuntimeEngine(
+        worker=RunnableLambda(run_task),
+        judge=RunnableLambda(judge_task),
+        checkpoint_judge=RunnableLambda(reject_gate),
+        runtime_replanner=RuntimeReplanner(
+            RunnableLambda(lambda _: build_replanned_execution_plan())
+        ),
+    )
+
+    final_state = engine.invoke(build_execution_plan(), build_plan_state_with_gate())
+
+    assert final_state["execution_plan"].id == "EP2"
+    assert final_state["plan_state"].checkpoint_ids == ["G1"]
+    assert final_state["replan_results"][0].status == RuntimeReplanStatus.APPLIED
+    assert final_state["plan_state"].task_statuses == {
+        "T1": "completed",
+        "T3": "completed",
+    }
+
+
 def test_runtime_engine_skips_already_checkpointed_gates() -> None:
     def run_task(task: TaskCard) -> TaskRunResult:
         return TaskRunResult(task_id=task.id, output={"message": f"ran {task.id}"})
@@ -1039,6 +1300,117 @@ def test_runtime_engine_emits_progress_signals_and_collects_judgments() -> None:
         and result.status == RuntimeCommandStatus.APPLIED
         for result in final_state["command_results"]
     )
+
+
+def test_runtime_engine_replans_after_process_judge_request() -> None:
+    class OneShotProcessReplanJudge:
+        def __init__(self) -> None:
+            self.fired = False
+
+        def evaluate(self, signal_history, latest_signal) -> ProcessJudgment | None:
+            if not self.fired and latest_signal.signal_type == "finding":
+                self.fired = True
+                return ProcessJudgment(
+                    task_id=latest_signal.task_id,
+                    assessment=ProcessAssessment.EARLY_TERMINATE,
+                    reasoning="Finding is off objective.",
+                    actions=[ProcessAction(type="terminate_task", value="low_relevance")],
+                )
+            return None
+
+    def run_task(task: TaskCard) -> TaskRunResult:
+        return TaskRunResult(task_id=task.id, output={"message": f"ran {task.id}"})
+
+    def judge_task(payload: dict[str, object]) -> JudgeVerdict:
+        result = payload["result"]
+        assert isinstance(result, TaskRunResult)
+        return JudgeVerdict(
+            task_id=result.task_id,
+            verdict="pass",
+            overall_confidence=1.0,
+            recommendation=JudgeRecommendation.ADVANCE,
+        )
+
+    bus = ProgressSignalBus()
+    bus.subscribe_process(OneShotProcessReplanJudge())
+    engine = RuntimeEngine(
+        worker=RunnableLambda(run_task),
+        judge=RunnableLambda(judge_task),
+        progress_bus=bus,
+        runtime_replanner=RuntimeReplanner(
+            RunnableLambda(lambda _: build_replanned_execution_plan())
+        ),
+    )
+
+    final_state = engine.invoke(build_execution_plan(), build_plan_state_with_gate())
+
+    assert final_state["execution_plan"].id == "EP2"
+    assert any(
+        command.type == RuntimeCommandType.TERMINATE_TASK
+        for command in final_state["runtime_commands"]
+    )
+    assert any(
+        command.type == RuntimeCommandType.REQUEST_REPLAN
+        for command in final_state["runtime_commands"]
+    )
+    assert final_state["replan_results"][0].status == RuntimeReplanStatus.APPLIED
+    assert final_state["plan_state"].task_statuses == {
+        "T1": "completed",
+        "T3": "completed",
+    }
+
+
+def test_runtime_engine_replans_after_observer_divergence() -> None:
+    class OneShotObserverReplanJudge:
+        def __init__(self) -> None:
+            self.fired = False
+
+        def evaluate(self, all_signals, latest_signal) -> ObserverJudgment | None:
+            if not self.fired and latest_signal.payload.status == "dispatched":
+                self.fired = True
+                return ObserverJudgment(
+                    health=ObserverHealth.DIVERGING,
+                    reasoning="Runtime is drifting from the objective.",
+                )
+            return None
+
+    def run_task(task: TaskCard) -> TaskRunResult:
+        return TaskRunResult(task_id=task.id, output={"message": f"ran {task.id}"})
+
+    def judge_task(payload: dict[str, object]) -> JudgeVerdict:
+        result = payload["result"]
+        assert isinstance(result, TaskRunResult)
+        return JudgeVerdict(
+            task_id=result.task_id,
+            verdict="pass",
+            overall_confidence=1.0,
+            recommendation=JudgeRecommendation.ADVANCE,
+        )
+
+    bus = ProgressSignalBus()
+    bus.subscribe_observer(OneShotObserverReplanJudge())
+    engine = RuntimeEngine(
+        worker=RunnableLambda(run_task),
+        judge=RunnableLambda(judge_task),
+        progress_bus=bus,
+        runtime_replanner=RuntimeReplanner(
+            RunnableLambda(lambda _: build_replanned_execution_plan())
+        ),
+    )
+
+    final_state = engine.invoke(build_execution_plan(), build_plan_state_with_gate())
+
+    assert final_state["execution_plan"].id == "EP2"
+    assert any(
+        command.source == "observer_judge"
+        and command.type == RuntimeCommandType.REQUEST_REPLAN
+        for command in final_state["runtime_commands"]
+    )
+    assert final_state["replan_results"][0].status == RuntimeReplanStatus.APPLIED
+    assert final_state["plan_state"].task_statuses == {
+        "T1": "completed",
+        "T3": "completed",
+    }
 
 
 def test_runtime_engine_emits_error_signal_before_worker_failure_reraises() -> None:

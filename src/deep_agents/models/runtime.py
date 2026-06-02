@@ -26,6 +26,12 @@ class RuntimeCommandStatus(StrEnum):
     FAILED = "failed"
 
 
+class RuntimeReplanStatus(StrEnum):
+    APPLIED = "applied"
+    SKIPPED = "skipped"
+    FAILED = "failed"
+
+
 class RuntimeCommand(DeepAgentsModel):
     type: RuntimeCommandType
     task_id: str | None = None
@@ -40,3 +46,11 @@ class RuntimeCommandResult(DeepAgentsModel):
     status: RuntimeCommandStatus = RuntimeCommandStatus.PENDING
     reason: str
     affected_task_ids: list[str] = Field(default_factory=list)
+
+
+class RuntimeReplanResult(DeepAgentsModel):
+    trigger: RuntimeCommandResult
+    status: RuntimeReplanStatus
+    reason: str
+    previous_execution_plan_id: str
+    new_execution_plan_id: str | None = None

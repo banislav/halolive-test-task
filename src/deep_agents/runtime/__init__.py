@@ -21,6 +21,7 @@ from deep_agents.runtime.observability import ObserverJudge, ProcessJudge, Progr
 from deep_agents.runtime.plan_tracker import PlanTracker
 from deep_agents.runtime.prompt_handler import PromptHandler
 from deep_agents.runtime.prompt_queue import PromptQueue
+from deep_agents.runtime.replanner import RuntimeReplanner
 from deep_agents.runtime.results import TaskRunResult
 
 __all__ = [
@@ -40,6 +41,7 @@ __all__ = [
     "RuntimeEvent",
     "RuntimeEngine",
     "RuntimeGraphState",
+    "RuntimeReplanner",
     "TaskCompleted",
     "TaskFailed",
     "TaskExecutionContext",
