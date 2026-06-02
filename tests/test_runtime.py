@@ -25,6 +25,8 @@ from deep_agents.models import (
     ProcessJudgment,
     PromptCategory,
     PromptQueueItem,
+    PromptReasoningInput,
+    PromptResponse,
     RuntimeCommand,
     RuntimeCommandResult,
     RuntimeCommandStatus,
@@ -38,6 +40,8 @@ from deep_agents.models import (
 from deep_agents.runtime import (
     ContextAssembler,
     Dispatcher,
+    InMemoryStore,
+    MemoryRecorder,
     ObserverJudge,
     PlanTracker,
     ProcessJudge,
@@ -807,6 +811,56 @@ def test_runtime_engine_answers_content_prompt_at_dispatch_boundary() -> None:
     assert final_state["runtime_commands"] == []
 
 
+def test_runtime_engine_passes_memory_context_to_content_reasoner() -> None:
+    captured_inputs: list[PromptReasoningInput] = []
+
+    def run_task(task: TaskCard) -> TaskRunResult:
+        return TaskRunResult(task_id=task.id, output={"message": f"ran {task.id}"})
+
+    def judge_task(payload: dict[str, object]) -> JudgeVerdict:
+        result = payload["result"]
+        assert isinstance(result, TaskRunResult)
+        return JudgeVerdict(
+            task_id=result.task_id,
+            verdict="pass",
+            overall_confidence=1.0,
+            recommendation=JudgeRecommendation.ADVANCE,
+        )
+
+    def answer_prompt(reasoning_input: PromptReasoningInput) -> PromptResponse:
+        captured_inputs.append(reasoning_input)
+        return PromptResponse(
+            prompt_id=reasoning_input.prompt.id,
+            answer="Answered from memory context.",
+        )
+
+    memory_store = InMemoryStore()
+    MemoryRecorder(memory_store).record_semantic_fact(
+        fact={"api": "API X requires auth header format Y."},
+        source="test",
+    )
+    queue = PromptQueue()
+    queue.push(PromptQueueItem(id="P1", content="What do we know about API X?"))
+    engine = RuntimeEngine(
+        worker=RunnableLambda(run_task),
+        judge=RunnableLambda(judge_task),
+        prompt_queue=queue,
+        content_reasoner=RunnableLambda(answer_prompt),
+        memory_store=memory_store,
+    )
+
+    engine.invoke(
+        build_execution_plan(),
+        PlanState(objective=Objective(raw="Test plan")),
+    )
+
+    memory_context = captured_inputs[0].context["memory_context"]
+    assert memory_context["semantic"][0]["payload"]["fact"] == {
+        "api": "API X requires auth header format Y."
+    }
+    assert any("plan_snapshot" in record["tags"] for record in memory_context["session"])
+
+
 def test_runtime_engine_records_plan_update_prompt_command() -> None:
     def run_task(task: TaskCard) -> TaskRunResult:
         return TaskRunResult(task_id=task.id, output={"message": f"ran {task.id}"})
@@ -888,6 +942,10 @@ def test_runtime_engine_replans_after_plan_update_prompt() -> None:
         RuntimeReplanStatus.APPLIED
     ]
     assert captured_inputs[0].context["trigger"]["command"]["source"] == "prompt_queue"
+    assert any(
+        "prompt_handling" in record["tags"]
+        for record in captured_inputs[0].context["memory_context"]["session"]
+    )
 
 
 def test_runtime_engine_records_p1_pause_prompt_command() -> None:

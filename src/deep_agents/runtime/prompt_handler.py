@@ -42,6 +42,7 @@ class PromptHandler:
         execution_plan: ExecutionPlan,
         plan_state: PlanState,
         results: dict[str, TaskRunResult],
+        memory_context: dict[str, Any] | None = None,
         current_task_id: str | None = None,
     ) -> list[PromptHandlingResult]:
         """Drain and handle queued prompts in deterministic order."""
@@ -53,6 +54,7 @@ class PromptHandler:
                     execution_plan=execution_plan,
                     plan_state=plan_state,
                     results=results,
+                    memory_context=memory_context,
                     current_task_id=current_task_id,
                 )
             )
@@ -65,6 +67,7 @@ class PromptHandler:
         execution_plan: ExecutionPlan,
         plan_state: PlanState,
         results: dict[str, TaskRunResult],
+        memory_context: dict[str, Any] | None = None,
         current_task_id: str | None = None,
     ) -> PromptHandlingResult:
         """Classify one prompt and produce a read-only response or advisory commands."""
@@ -78,6 +81,7 @@ class PromptHandler:
                 plan_state=plan_state,
                 results=results,
                 execution_plan=execution_plan,
+                memory_context=memory_context,
             )
         else:
             commands.append(
@@ -120,6 +124,7 @@ class PromptHandler:
         plan_state: PlanState,
         results: dict[str, TaskRunResult],
         execution_plan: ExecutionPlan,
+        memory_context: dict[str, Any] | None,
     ) -> PromptResponse:
         reasoning_input = PromptReasoningInput(
             prompt=prompt,
@@ -128,19 +133,48 @@ class PromptHandler:
                 task_id: result.model_dump(mode="json")
                 for task_id, result in results.items()
             },
-            context={"execution_plan_id": execution_plan.id},
+            context={
+                "execution_plan_id": execution_plan.id,
+                "memory_context": memory_context or {},
+            },
         )
         if self.content_reasoner is not None:
             result = self.content_reasoner.invoke(reasoning_input)
             return self._coerce_response(prompt, result)
+        memory_task_ids = self._task_ids_from_memory(memory_context or {})
+        referenced_task_ids = list(dict.fromkeys([*results, *memory_task_ids]))
+        artifact_ids = self._artifact_ids_from_memory(memory_context or {})
         return PromptResponse(
             prompt_id=prompt.id,
             answer=(
                 f"Plan status is {plan_state.status}. "
-                f"Completed results are available for: {', '.join(results) or 'none'}."
+                f"Known task results are available for: "
+                f"{', '.join(referenced_task_ids) or 'none'}."
             ),
-            referenced_task_ids=list(results),
+            referenced_task_ids=referenced_task_ids,
+            referenced_artifact_ids=artifact_ids,
         )
+
+    def _task_ids_from_memory(self, memory_context: dict[str, Any]) -> list[str]:
+        task_ids: list[str] = []
+        for records in memory_context.values():
+            if not isinstance(records, list):
+                continue
+            for record in records:
+                if isinstance(record, dict) and isinstance(record.get("task_id"), str):
+                    task_ids.append(record["task_id"])
+        return task_ids
+
+    def _artifact_ids_from_memory(self, memory_context: dict[str, Any]) -> list[str]:
+        artifact_ids: list[str] = []
+        for record in memory_context.get("session", []):
+            if not isinstance(record, dict) or "artifact" not in record.get("tags", []):
+                continue
+            payload = record.get("payload", {})
+            artifact = payload.get("artifact") if isinstance(payload, dict) else None
+            if isinstance(artifact, dict) and isinstance(artifact.get("id"), str):
+                artifact_ids.append(artifact["id"])
+        return artifact_ids
 
     def _interrupt_commands(
         self,
