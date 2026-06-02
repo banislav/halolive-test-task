@@ -1,5 +1,6 @@
 """Runtime primitives for coordinating deep-agent plans."""
 
+from deep_agents.runtime.command_executor import RuntimeCommandExecutor
 from deep_agents.runtime.context import (
     ArtifactStore,
     ContextAssembler,
@@ -35,6 +36,7 @@ __all__ = [
     "ProgressSignalReceived",
     "PromptHandler",
     "PromptQueue",
+    "RuntimeCommandExecutor",
     "RuntimeEvent",
     "RuntimeEngine",
     "RuntimeGraphState",
