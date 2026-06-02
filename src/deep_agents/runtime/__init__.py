@@ -17,6 +17,7 @@ from deep_agents.runtime.events import (
     TaskCompleted,
     TaskFailed,
 )
+from deep_agents.runtime.memory import InMemoryStore, MemoryRecorder, MemoryStore
 from deep_agents.runtime.observability import ObserverJudge, ProcessJudge, ProgressSignalBus
 from deep_agents.runtime.plan_tracker import PlanTracker
 from deep_agents.runtime.prompt_handler import PromptHandler
@@ -29,7 +30,10 @@ __all__ = [
     "ContextBudgetReport",
     "ContextAssembler",
     "Dispatcher",
+    "InMemoryStore",
     "JudgeVerdictReceived",
+    "MemoryRecorder",
+    "MemoryStore",
     "ObserverJudge",
     "PlanTracker",
     "ProcessJudge",

@@ -24,6 +24,7 @@ from deep_agents.models.judges import (
     ProcessAssessment,
     ProcessJudgment,
 )
+from deep_agents.models.memory import MemoryKind, MemoryQuery, MemoryRecord
 from deep_agents.models.planners import ExecutionPlannerInput, PlannerInput
 from deep_agents.models.planning import (
     AcceptanceCriterion,
@@ -92,6 +93,9 @@ __all__ = [
     "JudgeVerdict",
     "JudgeVerdictValue",
     "LayeredContext",
+    "MemoryKind",
+    "MemoryQuery",
+    "MemoryRecord",
     "Milestone",
     "Objective",
     "ObserverHealth",
