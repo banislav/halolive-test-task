@@ -4,6 +4,7 @@ from enum import StrEnum
 
 from pydantic import Field
 
+from deep_agents.models.agents import AgentAssignment, AgentLifecycleState
 from deep_agents.models.base import DeepAgentsModel, JsonObject, utc_now
 
 
@@ -32,6 +33,15 @@ class RuntimeReplanStatus(StrEnum):
     FAILED = "failed"
 
 
+class TaskAttemptStatus(StrEnum):
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    TIMED_OUT = "timed_out"
+    RETRYING = "retrying"
+    CANCELLED = "cancelled"
+
+
 class RuntimeCommand(DeepAgentsModel):
     type: RuntimeCommandType
     task_id: str | None = None
@@ -54,3 +64,28 @@ class RuntimeReplanResult(DeepAgentsModel):
     reason: str
     previous_execution_plan_id: str
     new_execution_plan_id: str | None = None
+
+
+class AgentLifecycleEvent(DeepAgentsModel):
+    task_id: str
+    attempt_id: str
+    state: AgentLifecycleState
+    timestamp: str = Field(default_factory=lambda: utc_now().isoformat())
+    detail: str | None = None
+    metadata: JsonObject = Field(default_factory=dict)
+
+
+class TaskAttemptRecord(DeepAgentsModel):
+    id: str
+    task_id: str
+    agent: AgentAssignment
+    retry_index: int = Field(ge=0)
+    max_retries: int = Field(ge=0)
+    timeout_seconds: float | None = Field(default=None, gt=0)
+    status: TaskAttemptStatus = TaskAttemptStatus.RUNNING
+    lifecycle_events: list[AgentLifecycleEvent] = Field(default_factory=list)
+    started_at: str = Field(default_factory=lambda: utc_now().isoformat())
+    completed_at: str | None = None
+    result: JsonObject = Field(default_factory=dict)
+    error_type: str | None = None
+    error_message: str | None = None

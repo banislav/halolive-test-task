@@ -57,12 +57,15 @@ from deep_agents.models.prompts import (
     PromptResponse,
 )
 from deep_agents.models.runtime import (
+    AgentLifecycleEvent,
     RuntimeCommand,
     RuntimeCommandResult,
     RuntimeCommandStatus,
     RuntimeCommandType,
     RuntimeReplanResult,
     RuntimeReplanStatus,
+    TaskAttemptRecord,
+    TaskAttemptStatus,
 )
 from deep_agents.models.signals import ProgressSignal, ProgressSignalPayload, ProgressSignalType
 from deep_agents.models.skills import (
@@ -80,6 +83,7 @@ __all__ = [
     "AcceptanceCriterion",
     "AgentAssignment",
     "AgentKind",
+    "AgentLifecycleEvent",
     "AgentLifecycleState",
     "AgentProfile",
     "ArtifactRecord",
@@ -141,6 +145,8 @@ __all__ = [
     "SkillSubSkill",
     "SkillTool",
     "Task",
+    "TaskAttemptRecord",
+    "TaskAttemptStatus",
     "TaskCard",
     "TaskInvocation",
     "TaskStatus",
