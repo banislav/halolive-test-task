@@ -16,7 +16,13 @@ from deep_agents.models import (
 )
 from deep_agents.models.base import utc_now
 from deep_agents.runtime.context import TaskExecutionContext
+from deep_agents.runtime.long_running import (
+    LongRunningContext,
+    LongRunningRunRegistry,
+    long_running_context,
+)
 from deep_agents.runtime.memory import MemoryRecorder
+from deep_agents.runtime.observability import ProgressSignalBus
 from deep_agents.runtime.results import TaskRunResult
 from deep_agents.runtime.tools import tool_attempt_context
 
@@ -48,10 +54,14 @@ class TaskAttemptRunner:
         invoker: TaskInvoker,
         memory_recorder: MemoryRecorder,
         plan_id: str | None,
+        progress_bus: ProgressSignalBus | None = None,
+        long_running_registry: LongRunningRunRegistry | None = None,
     ) -> None:
         self.invoker = invoker
         self.memory_recorder = memory_recorder
         self.plan_id = plan_id
+        self.progress_bus = progress_bus or ProgressSignalBus()
+        self.long_running_registry = long_running_registry or LongRunningRunRegistry()
 
     def invoke(
         self,
@@ -73,6 +83,7 @@ class TaskAttemptRunner:
                 timeout_seconds=task.invocation.timeout_seconds,
             )
             attempts.append(attempt)
+            long_context = self._long_running_context(task, worker_input, attempt.id)
 
             try:
                 self._emit_lifecycle(
@@ -99,8 +110,15 @@ class TaskAttemptRunner:
                     AgentLifecycleState.EXECUTING,
                     detail="Task execution started.",
                 )
-                raw_result = self._invoke_with_timeout(task, worker_input, attempt.id)
+                raw_result = self._invoke_with_timeout(
+                    task,
+                    worker_input,
+                    attempt.id,
+                    long_context,
+                )
                 result = self._coerce_result(task.id, raw_result)
+                if long_context is not None:
+                    long_context.complete()
                 self._emit_lifecycle(
                     attempt,
                     AgentLifecycleState.REPORTING,
@@ -111,6 +129,8 @@ class TaskAttemptRunner:
                     "result": result.model_dump(mode="json"),
                     "tool_calls": self._tool_call_summaries(task.id, attempt.id),
                 }
+                if long_context is not None:
+                    attempt.result["long_running"] = long_context.summary()
                 attempt.completed_at = utc_now().isoformat()
                 self._emit_lifecycle(
                     attempt,
@@ -120,6 +140,8 @@ class TaskAttemptRunner:
                 self.memory_recorder.record_task_attempt(attempt, plan_id=self.plan_id)
                 return result, attempts
             except Exception as exc:
+                if long_context is not None:
+                    long_context.fail(exc)
                 last_exception = exc
                 if isinstance(exc, TimeoutError):
                     exhausted_status = TaskAttemptStatus.TIMED_OUT
@@ -169,10 +191,17 @@ class TaskAttemptRunner:
         task: TaskCard,
         worker_input: TaskCard | TaskExecutionContext,
         attempt_id: str,
+        long_context: LongRunningContext | None,
     ) -> TaskRunResult | dict[str, Any]:
         timeout_seconds = task.invocation.timeout_seconds
         executor = ThreadPoolExecutor(max_workers=1)
-        future = executor.submit(self._invoke_with_attempt_context, task, worker_input, attempt_id)
+        future = executor.submit(
+            self._invoke_with_attempt_context,
+            task,
+            worker_input,
+            attempt_id,
+            long_context,
+        )
         try:
             return future.result(timeout=timeout_seconds)
         except FutureTimeoutError as exc:
@@ -188,9 +217,39 @@ class TaskAttemptRunner:
         task: TaskCard,
         worker_input: TaskCard | TaskExecutionContext,
         attempt_id: str,
+        long_context: LongRunningContext | None,
     ) -> TaskRunResult | dict[str, Any]:
         with tool_attempt_context(attempt_id):
-            return self.invoker(task, worker_input)
+            with long_running_context(long_context):
+                return self.invoker(task, worker_input)
+
+    def _long_running_context(
+        self,
+        task: TaskCard,
+        worker_input: TaskCard | TaskExecutionContext,
+        attempt_id: str,
+    ) -> LongRunningContext | None:
+        config = task.invocation.long_running
+        if config is None:
+            return None
+        resume_from = (
+            self.long_running_registry.latest_checkpoint_for_task(task.id)
+            if config.resumable
+            else None
+        )
+        context = LongRunningContext(
+            task_id=task.id,
+            attempt_id=attempt_id,
+            config=config,
+            registry=self.long_running_registry,
+            memory_recorder=self.memory_recorder,
+            progress_bus=self.progress_bus,
+            plan_id=self.plan_id,
+            resume_from=resume_from,
+        )
+        if isinstance(worker_input, TaskExecutionContext):
+            worker_input.long_running = context
+        return context
 
     def _emit_lifecycle(
         self,

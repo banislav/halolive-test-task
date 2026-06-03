@@ -10,11 +10,15 @@ from deep_agents.models import (
     RuntimeCommandType,
     TaskStatus,
 )
+from deep_agents.runtime.long_running import LongRunningRunRegistry
 from deep_agents.runtime.plan_tracker import PlanTracker
 
 
 class RuntimeCommandExecutor:
     """Apply deterministic runtime commands to plan state."""
+
+    def __init__(self, *, long_running_registry: LongRunningRunRegistry | None = None) -> None:
+        self.long_running_registry = long_running_registry
 
     def execute(
         self,
@@ -34,6 +38,8 @@ class RuntimeCommandExecutor:
             return self._resume_task(command, tracker)
         if command.type == RuntimeCommandType.TERMINATE_TASK:
             return self._terminate_task(command, tracker)
+        if command.type == RuntimeCommandType.ADJUST_TIMEOUT:
+            return self._adjust_timeout(command)
         if command.type == RuntimeCommandType.MARK_EARLY_COMPLETE:
             return RuntimeCommandResult(
                 command=command,
@@ -68,11 +74,16 @@ class RuntimeCommandExecutor:
         previous = tracker.state.status
         tracker.state.status = PlanStatus.PAUSED
         tracker._log_plan_change(previous, PlanStatus.PAUSED, "runtime_command.halt")
+        affected = (
+            self.long_running_registry.request_cancel(None, reason=command.reason)
+            if self.long_running_registry is not None
+            else []
+        )
         return RuntimeCommandResult(
             command=command,
             status=RuntimeCommandStatus.APPLIED,
             reason="Runtime halt command paused the plan.",
-            affected_task_ids=[],
+            affected_task_ids=affected,
         )
 
     def _pause_task(
@@ -92,6 +103,11 @@ class RuntimeCommandExecutor:
                 )
             previous = tracker.state.task_statuses[command.task_id]
             tracker.state.task_statuses[command.task_id] = TaskStatus.PAUSED
+            affected = (
+                self.long_running_registry.request_cancel(command.task_id, reason=command.reason)
+                if self.long_running_registry is not None
+                else [command.task_id]
+            )
             tracker._log_task_change(
                 command.task_id,
                 previous,
@@ -102,10 +118,12 @@ class RuntimeCommandExecutor:
                 command=command,
                 status=RuntimeCommandStatus.APPLIED,
                 reason=f"Paused running task {command.task_id}.",
-                affected_task_ids=[command.task_id],
+                affected_task_ids=affected,
             )
 
         paused = tracker.pause_all_running()
+        if self.long_running_registry is not None:
+            self.long_running_registry.request_cancel(None, reason=command.reason)
         status = RuntimeCommandStatus.APPLIED if paused else RuntimeCommandStatus.IGNORED
         reason = "Paused all running tasks." if paused else "No running tasks to pause."
         return RuntimeCommandResult(
@@ -181,6 +199,8 @@ class RuntimeCommandExecutor:
 
         previous = tracker.state.task_statuses[command.task_id]
         tracker.state.task_statuses[command.task_id] = TaskStatus.TERMINATED
+        if self.long_running_registry is not None:
+            self.long_running_registry.request_cancel(command.task_id, reason=command.reason)
         tracker._log_task_change(
             command.task_id,
             previous,
@@ -199,6 +219,29 @@ class RuntimeCommandExecutor:
             status=RuntimeCommandStatus.APPLIED,
             reason="Terminated task and marked plan refining for follow-up replanning.",
             affected_task_ids=[command.task_id],
+        )
+
+    def _adjust_timeout(self, command: RuntimeCommand) -> RuntimeCommandResult:
+        if self.long_running_registry is None or command.task_id is None:
+            return RuntimeCommandResult(
+                command=command,
+                status=RuntimeCommandStatus.IGNORED,
+                reason="No active long-running registry or task id for timeout adjustment.",
+            )
+        seconds = command.payload.get(
+            "seconds",
+            command.payload.get("timeout_seconds", command.payload.get("value", 0)),
+        )
+        if not isinstance(seconds, int) or seconds <= 0:
+            return self._failed(command, "adjust_timeout requires positive integer seconds.")
+        affected = self.long_running_registry.extend_timeout(command.task_id, seconds)
+        return RuntimeCommandResult(
+            command=command,
+            status=RuntimeCommandStatus.APPLIED if affected else RuntimeCommandStatus.IGNORED,
+            reason="Recorded cooperative timeout extension."
+            if affected
+            else "No active long-running attempt matched timeout adjustment.",
+            affected_task_ids=affected,
         )
 
     def _failed(self, command: RuntimeCommand, reason: str) -> RuntimeCommandResult:

@@ -40,6 +40,7 @@ from deep_agents.runtime.agent_registry import AgentRegistry
 from deep_agents.runtime.command_executor import RuntimeCommandExecutor
 from deep_agents.runtime.context import ContextAssembler, TaskExecutionContext
 from deep_agents.runtime.handoffs import HandoffRunner
+from deep_agents.runtime.long_running import LongRunningRunRegistry
 from deep_agents.runtime.memory import InMemoryStore, MemoryRecorder, MemoryStore
 from deep_agents.runtime.memory_context import build_memory_context
 from deep_agents.runtime.observability import ProgressSignalBus
@@ -108,7 +109,10 @@ class RuntimeEngine:
             prompt_classifier=prompt_classifier,
             content_reasoner=content_reasoner,
         )
+        self.long_running_registry = LongRunningRunRegistry()
         self.command_executor = command_executor or RuntimeCommandExecutor()
+        if self.command_executor.long_running_registry is None:
+            self.command_executor.long_running_registry = self.long_running_registry
         self.runtime_replanner = runtime_replanner
         self.agent_registry = agent_registry
         self.progress_bus = progress_bus or ProgressSignalBus()
@@ -323,6 +327,8 @@ class RuntimeEngine:
                 ),
                 memory_recorder=self.memory_recorder,
                 plan_id=state["execution_plan"].id,
+                progress_bus=self.progress_bus,
+                long_running_registry=self.long_running_registry,
             ).invoke(task, worker_input)
             state.setdefault("task_attempts", []).extend(attempts)
             state["latest_result"] = result

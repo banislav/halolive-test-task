@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from pydantic import Field
 
@@ -58,6 +59,7 @@ class TaskExecutionContext(DeepAgentsModel):
     memory_context: JsonObject = Field(default_factory=dict)
     budget_report: ContextBudgetReport = Field(default_factory=ContextBudgetReport)
     layered_context: LayeredContext = Field(default_factory=LayeredContext)
+    long_running: Any | None = Field(default=None, exclude=True)
 
 
 class ArtifactStore:

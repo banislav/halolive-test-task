@@ -15,6 +15,10 @@ from deep_agents.models import (
     HandoffStep,
     JudgeRecommendation,
     JudgeVerdict,
+    LongRunningCheckpoint,
+    LongRunningRunState,
+    LongRunningStatus,
+    LongRunningTaskConfig,
     Milestone,
     Objective,
     PlannerInput,
@@ -198,6 +202,34 @@ def test_task_card_matches_architecture_schema() -> None:
 
     assert card.invocation.input["query"] == "deep agents"
     assert card.risks[0].fallback == "Use archive versions"
+
+
+def test_long_running_task_config_and_state_models_serialize() -> None:
+    config = LongRunningTaskConfig(
+        heartbeat_interval_seconds=30,
+        checkpoint_interval_seconds=60,
+        max_memory_mb=2048,
+        max_cpu_time_seconds=1800,
+        max_elapsed_seconds=3600,
+    )
+    checkpoint = LongRunningCheckpoint(
+        task_id="T1",
+        attempt_id="A1",
+        sequence=1,
+        payload={"processed": 10},
+        cursor={"offset": 10},
+        percent_complete=25,
+    )
+    state = LongRunningRunState(
+        task_id="T1",
+        attempt_id="A1",
+        status=LongRunningStatus.CHECKPOINTED,
+        checkpoint_ids=["checkpoint-1"],
+    )
+
+    assert config.resumable is True
+    assert checkpoint.cursor == {"offset": 10}
+    assert state.model_dump(mode="json")["status"] == "checkpointed"
 
 
 def test_execution_plan_models_multi_agent_topology_and_handoffs() -> None:
