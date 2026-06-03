@@ -12,6 +12,7 @@ from deep_agents.models.execution import (
     DependencyGraph,
     ExecutionPlan,
     HandoffStep,
+    LongRunningTaskConfig,
     RetryPolicy,
     TaskCard,
     TaskInvocation,
@@ -58,6 +59,9 @@ from deep_agents.models.prompts import (
 )
 from deep_agents.models.runtime import (
     AgentLifecycleEvent,
+    LongRunningCheckpoint,
+    LongRunningRunState,
+    LongRunningStatus,
     RuntimeCommand,
     RuntimeCommandResult,
     RuntimeCommandStatus,
@@ -113,6 +117,10 @@ __all__ = [
     "JudgeVerdict",
     "JudgeVerdictValue",
     "LayeredContext",
+    "LongRunningCheckpoint",
+    "LongRunningRunState",
+    "LongRunningStatus",
+    "LongRunningTaskConfig",
     "MemoryKind",
     "MemoryQuery",
     "MemoryRecord",

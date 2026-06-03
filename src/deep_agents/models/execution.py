@@ -16,6 +16,18 @@ class RetryPolicy(DeepAgentsModel):
     on_exhaust: str = "escalate_to_replanner"
 
 
+class LongRunningTaskConfig(DeepAgentsModel):
+    heartbeat_interval_seconds: int = Field(default=30, gt=0)
+    checkpoint_interval_seconds: int = Field(default=60, gt=0)
+    progress_reporting: bool = True
+    early_findings_enabled: bool = True
+    timeout_seconds: int | None = Field(default=None, gt=0)
+    resumable: bool = True
+    max_memory_mb: float | None = Field(default=None, gt=0)
+    max_cpu_time_seconds: int | None = Field(default=None, gt=0)
+    max_elapsed_seconds: int | None = Field(default=None, gt=0)
+
+
 class TaskInvocation(DeepAgentsModel):
     method: str = "async_dispatch"
     input: JsonObject = Field(default_factory=dict)
@@ -23,6 +35,7 @@ class TaskInvocation(DeepAgentsModel):
     expected_output_schema: JsonObject = Field(default_factory=dict)
     timeout_seconds: int = Field(default=120, gt=0)
     retry_policy: RetryPolicy = Field(default_factory=RetryPolicy)
+    long_running: LongRunningTaskConfig | None = None
 
 
 class TaskResponsiveness(DeepAgentsModel):

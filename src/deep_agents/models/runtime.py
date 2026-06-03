@@ -33,6 +33,14 @@ class RuntimeReplanStatus(StrEnum):
     FAILED = "failed"
 
 
+class LongRunningStatus(StrEnum):
+    RUNNING = "running"
+    CHECKPOINTED = "checkpointed"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
 class TaskAttemptStatus(StrEnum):
     RUNNING = "running"
     SUCCEEDED = "succeeded"
@@ -64,6 +72,29 @@ class RuntimeReplanResult(DeepAgentsModel):
     reason: str
     previous_execution_plan_id: str
     new_execution_plan_id: str | None = None
+
+
+class LongRunningCheckpoint(DeepAgentsModel):
+    task_id: str
+    attempt_id: str
+    sequence: int = Field(ge=1)
+    payload: JsonObject = Field(default_factory=dict)
+    percent_complete: float | None = Field(default=None, ge=0, le=100)
+    cursor: JsonObject | None = None
+    timestamp: str = Field(default_factory=lambda: utc_now().isoformat())
+
+
+class LongRunningRunState(DeepAgentsModel):
+    task_id: str
+    attempt_id: str
+    status: LongRunningStatus = LongRunningStatus.RUNNING
+    last_heartbeat_at: str | None = None
+    last_checkpoint_at: str | None = None
+    checkpoint_ids: list[str] = Field(default_factory=list)
+    resource_observations: list[JsonObject] = Field(default_factory=list)
+    cancel_requested: bool = False
+    cancel_reason: str | None = None
+    timeout_extension_seconds: int | None = Field(default=None, ge=0)
 
 
 class AgentLifecycleEvent(DeepAgentsModel):
