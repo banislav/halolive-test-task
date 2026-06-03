@@ -37,7 +37,6 @@ from deep_agents.models import (
     TaskCard,
 )
 from deep_agents.runtime.agent_registry import AgentRegistry
-from deep_agents.runtime.task_attempts import TaskAttemptRunError, TaskAttemptRunner
 from deep_agents.runtime.command_executor import RuntimeCommandExecutor
 from deep_agents.runtime.context import ContextAssembler, TaskExecutionContext
 from deep_agents.runtime.handoffs import HandoffRunner
@@ -49,6 +48,7 @@ from deep_agents.runtime.prompt_handler import PromptHandler
 from deep_agents.runtime.prompt_queue import PromptQueue
 from deep_agents.runtime.replanner import RuntimeReplanner
 from deep_agents.runtime.results import TaskRunResult
+from deep_agents.runtime.task_attempts import TaskAttemptRunError, TaskAttemptRunner
 
 logger = get_logger(__name__)
 
