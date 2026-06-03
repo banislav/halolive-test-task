@@ -1,6 +1,7 @@
 """Runtime primitives for coordinating deep-agent plans."""
 
 from deep_agents.runtime.agent_registry import AgentRegistry
+from deep_agents.runtime.task_attempts import TaskAttemptRunError, TaskAttemptRunner
 from deep_agents.runtime.command_executor import RuntimeCommandExecutor
 from deep_agents.runtime.context import (
     ArtifactStore,
@@ -51,6 +52,8 @@ __all__ = [
     "RuntimeEngine",
     "RuntimeGraphState",
     "RuntimeReplanner",
+    "TaskAttemptRunError",
+    "TaskAttemptRunner",
     "TaskCompleted",
     "TaskFailed",
     "TaskExecutionContext",
