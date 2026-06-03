@@ -1,14 +1,21 @@
 """Public model exports for the deep-agent runtime."""
 
-from deep_agents.models.agents import AgentAssignment, AgentKind, AgentLifecycleState
+from deep_agents.models.agents import (
+    AgentAssignment,
+    AgentKind,
+    AgentLifecycleState,
+    AgentProfile,
+)
 from deep_agents.models.base import DeepAgentsModel
 from deep_agents.models.context import ArtifactRecord, ArtifactRef, ContextBudget, LayeredContext
 from deep_agents.models.execution import (
     DependencyGraph,
     ExecutionPlan,
+    HandoffStep,
     RetryPolicy,
     TaskCard,
     TaskInvocation,
+    TopologyPattern,
     Wave,
 )
 from deep_agents.models.judges import (
@@ -74,6 +81,7 @@ __all__ = [
     "AgentAssignment",
     "AgentKind",
     "AgentLifecycleState",
+    "AgentProfile",
     "ArtifactRecord",
     "ArtifactRef",
     "Clarification",
@@ -88,6 +96,7 @@ __all__ = [
     "GateDecision",
     "GateJudgment",
     "GateType",
+    "HandoffStep",
     "InterruptPriority",
     "JudgeRecommendation",
     "JudgeVerdict",
@@ -135,5 +144,6 @@ __all__ = [
     "TaskCard",
     "TaskInvocation",
     "TaskStatus",
+    "TopologyPattern",
     "Wave",
 ]

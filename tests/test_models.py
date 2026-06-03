@@ -5,12 +5,14 @@ from deep_agents.models import (
     AcceptanceCriterion,
     AgentAssignment,
     AgentKind,
+    AgentProfile,
     Clarification,
     DiscoveryPlan,
     ExecutionPlan,
     ExecutionPlannerInput,
     GateDecision,
     GateJudgment,
+    HandoffStep,
     JudgeRecommendation,
     JudgeVerdict,
     Milestone,
@@ -23,6 +25,7 @@ from deep_agents.models import (
     SkillLoadMode,
     Task,
     TaskCard,
+    TopologyPattern,
     Wave,
 )
 
@@ -195,6 +198,49 @@ def test_task_card_matches_architecture_schema() -> None:
 
     assert card.invocation.input["query"] == "deep agents"
     assert card.risks[0].fallback == "Use archive versions"
+
+
+def test_execution_plan_models_multi_agent_topology_and_handoffs() -> None:
+    profile = AgentProfile(
+        id="analysis_worker",
+        name="AnalysisWorker",
+        type=AgentKind.SPECIALIST,
+        description="Analyzes extracted data.",
+    )
+    card = TaskCard(
+        id="T1",
+        name="Complete browser workflow",
+        wave=0,
+        assigned_to=AgentAssignment(type=AgentKind.WORKER, name="BrowserWorker"),
+        handoff_chain=[
+            HandoffStep(
+                id="fill_form",
+                name="Fill form",
+                assigned_to=AgentAssignment(type=AgentKind.SPECIALIST, name="FormFiller"),
+                instruction="Fill the required form fields.",
+            ),
+            HandoffStep(
+                id="extract_confirmation",
+                name="Extract confirmation",
+                assigned_to=AgentAssignment(
+                    type=AgentKind.SPECIALIST,
+                    name="DataExtractor",
+                    agent_id=profile.id,
+                ),
+                instruction="Extract confirmation data.",
+            ),
+        ],
+    )
+    plan = ExecutionPlan(
+        id="EP-topology",
+        objective="Exercise topology",
+        waves=[Wave(index=0, task_ids=["T1"], topology=TopologyPattern.HANDOFFS)],
+        task_cards=[card],
+    )
+
+    assert plan.waves[0].topology == TopologyPattern.HANDOFFS
+    assert plan.task_cards[0].handoff_chain[1].assigned_to.agent_id == "analysis_worker"
+    assert profile.type == AgentKind.SPECIALIST
 
 
 def test_execution_plan_rejects_unknown_wave_task_id() -> None:

@@ -29,4 +29,15 @@ class AgentLifecycleState(StrEnum):
 class AgentAssignment(DeepAgentsModel):
     type: AgentKind
     name: str
+    agent_id: str | None = None
     skills: list[SkillAssignment] = Field(default_factory=list)
+
+
+class AgentProfile(DeepAgentsModel):
+    """Registry metadata for a runnable agent."""
+
+    id: str
+    name: str
+    type: AgentKind
+    description: str | None = None
+    default_skills: list[SkillAssignment] = Field(default_factory=list)
