@@ -33,6 +33,26 @@ class RuntimeReplanStatus(StrEnum):
     FAILED = "failed"
 
 
+class RuntimeMessageType(StrEnum):
+    RESULT = "result"
+    VERDICT = "verdict"
+    SIGNAL = "signal"
+    REQUEST = "request"
+    PROGRESS = "progress"
+    PROMPT = "prompt"
+    COMMAND = "command"
+    ERROR = "error"
+
+
+class RuntimeSessionStatus(StrEnum):
+    CREATED = "created"
+    RUNNING = "running"
+    PAUSED = "paused"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    STOPPED = "stopped"
+
+
 class LongRunningStatus(StrEnum):
     RUNNING = "running"
     CHECKPOINTED = "checkpointed"
@@ -72,6 +92,29 @@ class RuntimeReplanResult(DeepAgentsModel):
     reason: str
     previous_execution_plan_id: str
     new_execution_plan_id: str | None = None
+
+
+class RuntimeMessage(DeepAgentsModel):
+    from_agent: str = Field(alias="from")
+    to_agent: str = Field(alias="to")
+    type: RuntimeMessageType
+    payload: JsonObject = Field(default_factory=dict)
+    correlation_id: str
+    timestamp: str = Field(default_factory=lambda: utc_now().isoformat())
+
+
+class RuntimeSessionSnapshot(DeepAgentsModel):
+    session_id: str
+    status: RuntimeSessionStatus
+    execution_plan_id: str | None = None
+    current_task_id: str | None = None
+    plan_state: JsonObject = Field(default_factory=dict)
+    results: dict[str, JsonObject] = Field(default_factory=dict)
+    runtime_commands: list[JsonObject] = Field(default_factory=list)
+    command_results: list[JsonObject] = Field(default_factory=list)
+    prompt_results: list[JsonObject] = Field(default_factory=list)
+    pending_prompt_ids: list[str] = Field(default_factory=list)
+    memory_record_count: int = 0
 
 
 class LongRunningCheckpoint(DeepAgentsModel):

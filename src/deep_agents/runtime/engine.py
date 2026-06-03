@@ -125,32 +125,7 @@ class RuntimeEngine:
             "runtime engine invoke started",
             extra={"execution_plan_id": execution_plan.id, "plan_status": plan_state.status},
         )
-        initial_state: RuntimeGraphState = {
-            "execution_plan": execution_plan,
-            "plan_state": plan_state,
-            "current_task_id": None,
-            "current_context": None,
-            "latest_result": None,
-            "latest_verdict": None,
-            "results": {},
-            "process_judgments": [],
-            "observer_judgments": [],
-            "gate_judgments": [],
-            "prompt_results": [],
-            "runtime_commands": [],
-            "command_results": [],
-            "replan_results": [],
-            "task_attempts": [],
-            "memory_records": [],
-        }
-        self.memory_recorder.record_plan_snapshot(
-            execution_plan=execution_plan,
-            plan_state=plan_state,
-            results={},
-            source="runtime_engine",
-            reason="initial_plan",
-        )
-        self._sync_memory_state(initial_state)
+        initial_state = self.initial_state(execution_plan, plan_state)
         try:
             final_state = self.graph.invoke(
                 initial_state,
@@ -182,6 +157,35 @@ class RuntimeEngine:
             "runtime engine async invoke started",
             extra={"execution_plan_id": execution_plan.id, "plan_status": plan_state.status},
         )
+        initial_state = self.initial_state(execution_plan, plan_state)
+
+        try:
+            final_state = await self.graph.ainvoke(
+                initial_state,
+                config={"recursion_limit": self.recursion_limit},
+            )
+        except Exception:
+            logger.exception(
+                "runtime engine async invoke failed",
+                extra={"execution_plan_id": execution_plan.id},
+            )
+            raise
+        self._sync_memory_state(final_state)
+        logger.info(
+            "runtime engine async invoke completed",
+            extra={
+                "execution_plan_id": execution_plan.id,
+                "plan_status": final_state["plan_state"].status,
+            },
+        )
+        return final_state
+
+    def initial_state(
+        self,
+        execution_plan: ExecutionPlan,
+        plan_state: PlanState,
+    ) -> RuntimeGraphState:
+        """Create the canonical initial runtime graph state."""
         initial_state: RuntimeGraphState = {
             "execution_plan": execution_plan,
             "plan_state": plan_state,
@@ -208,26 +212,7 @@ class RuntimeEngine:
             reason="initial_plan",
         )
         self._sync_memory_state(initial_state)
-        try:
-            final_state = await self.graph.ainvoke(
-                initial_state,
-                config={"recursion_limit": self.recursion_limit},
-            )
-        except Exception:
-            logger.exception(
-                "runtime engine async invoke failed",
-                extra={"execution_plan_id": execution_plan.id},
-            )
-            raise
-        self._sync_memory_state(final_state)
-        logger.info(
-            "runtime engine async invoke completed",
-            extra={
-                "execution_plan_id": execution_plan.id,
-                "plan_status": final_state["plan_state"].status,
-            },
-        )
-        return final_state
+        return initial_state
 
     def _build_graph(self) -> Any:
         graph = StateGraph(RuntimeGraphState)
