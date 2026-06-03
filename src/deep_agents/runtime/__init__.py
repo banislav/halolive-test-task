@@ -39,12 +39,18 @@ from deep_agents.runtime.prompt_handler import PromptHandler
 from deep_agents.runtime.prompt_queue import PromptQueue
 from deep_agents.runtime.replanner import RuntimeReplanner
 from deep_agents.runtime.results import TaskRunResult
+from deep_agents.runtime.session import (
+    AsyncRuntimeSession,
+    RuntimeMessageBus,
+    SessionProgressSignalBus,
+)
 from deep_agents.runtime.task_attempts import TaskAttemptRunError, TaskAttemptRunner
 from deep_agents.runtime.tools import ToolMiddlewareRunner, ToolPolicy, ToolRegistry
 
 __all__ = [
     "ArtifactStore",
     "AgentRegistry",
+    "AsyncRuntimeSession",
     "BROWSER_TOOL_IDS",
     "BrowserRuntimeError",
     "BrowserSession",
@@ -72,7 +78,9 @@ __all__ = [
     "RuntimeEvent",
     "RuntimeEngine",
     "RuntimeGraphState",
+    "RuntimeMessageBus",
     "RuntimeReplanner",
+    "SessionProgressSignalBus",
     "TaskAttemptRunError",
     "TaskAttemptRunner",
     "TaskCompleted",
