@@ -22,6 +22,9 @@ from deep_agents.models import (
     RuntimeCommandResult,
     RuntimeReplanResult,
     TaskAttemptRecord,
+    ToolCallRequest,
+    ToolCallResult,
+    ToolDefinition,
 )
 from deep_agents.models.base import JsonObject
 from deep_agents.runtime.context import TaskExecutionContext
@@ -261,6 +264,44 @@ class MemoryRecorder:
             plan_id=plan_id,
             tags=["task_attempt", attempt.status],
             payload={"attempt": attempt.model_dump(mode="json")},
+        )
+
+    def record_tool_call(
+        self,
+        *,
+        request: ToolCallRequest,
+        definition: ToolDefinition,
+        plan_id: str | None,
+        started_at: str,
+    ) -> MemoryRecord:
+        """Record a requested tool call before middleware execution."""
+        return self.put(
+            kind=MemoryKind.SESSION,
+            source="tool_middleware",
+            task_id=request.task_id,
+            plan_id=plan_id,
+            tags=["tool_call", request.tool_id],
+            payload={
+                "request": request.model_dump(mode="json"),
+                "definition": definition.model_dump(mode="json"),
+                "started_at": started_at,
+            },
+        )
+
+    def record_tool_result(
+        self,
+        result: ToolCallResult,
+        *,
+        plan_id: str | None,
+    ) -> MemoryRecord:
+        """Record the captured output or middleware decision for a tool call."""
+        return self.put(
+            kind=MemoryKind.SESSION,
+            source="tool_middleware",
+            task_id=result.task_id,
+            plan_id=plan_id,
+            tags=["tool_result", result.tool_id, result.status],
+            payload={"result": result.model_dump(mode="json")},
         )
 
     def record_artifact(

@@ -9,6 +9,7 @@ from uuid import uuid4
 from deep_agents.models import (
     AgentLifecycleEvent,
     AgentLifecycleState,
+    MemoryQuery,
     TaskAttemptRecord,
     TaskAttemptStatus,
     TaskCard,
@@ -17,6 +18,7 @@ from deep_agents.models.base import utc_now
 from deep_agents.runtime.context import TaskExecutionContext
 from deep_agents.runtime.memory import MemoryRecorder
 from deep_agents.runtime.results import TaskRunResult
+from deep_agents.runtime.tools import tool_attempt_context
 
 TaskInvoker = Callable[[TaskCard, TaskCard | TaskExecutionContext], TaskRunResult | dict[str, Any]]
 
@@ -97,7 +99,7 @@ class TaskAttemptRunner:
                     AgentLifecycleState.EXECUTING,
                     detail="Task execution started.",
                 )
-                raw_result = self._invoke_with_timeout(task, worker_input)
+                raw_result = self._invoke_with_timeout(task, worker_input, attempt.id)
                 result = self._coerce_result(task.id, raw_result)
                 self._emit_lifecycle(
                     attempt,
@@ -105,7 +107,10 @@ class TaskAttemptRunner:
                     detail="Task result reported.",
                 )
                 attempt.status = TaskAttemptStatus.SUCCEEDED
-                attempt.result = result.model_dump(mode="json")
+                attempt.result = {
+                    "result": result.model_dump(mode="json"),
+                    "tool_calls": self._tool_call_summaries(task.id, attempt.id),
+                }
                 attempt.completed_at = utc_now().isoformat()
                 self._emit_lifecycle(
                     attempt,
@@ -163,10 +168,11 @@ class TaskAttemptRunner:
         self,
         task: TaskCard,
         worker_input: TaskCard | TaskExecutionContext,
+        attempt_id: str,
     ) -> TaskRunResult | dict[str, Any]:
         timeout_seconds = task.invocation.timeout_seconds
         executor = ThreadPoolExecutor(max_workers=1)
-        future = executor.submit(self.invoker, task, worker_input)
+        future = executor.submit(self._invoke_with_attempt_context, task, worker_input, attempt_id)
         try:
             return future.result(timeout=timeout_seconds)
         except FutureTimeoutError as exc:
@@ -176,6 +182,15 @@ class TaskAttemptRunner:
             ) from exc
         finally:
             executor.shutdown(wait=False, cancel_futures=True)
+
+    def _invoke_with_attempt_context(
+        self,
+        task: TaskCard,
+        worker_input: TaskCard | TaskExecutionContext,
+        attempt_id: str,
+    ) -> TaskRunResult | dict[str, Any]:
+        with tool_attempt_context(attempt_id):
+            return self.invoker(task, worker_input)
 
     def _emit_lifecycle(
         self,
@@ -212,3 +227,22 @@ class TaskAttemptRunner:
         data = dict(value)
         data.setdefault("task_id", task_id)
         return TaskRunResult(**data)
+
+    def _tool_call_summaries(self, task_id: str, attempt_id: str) -> list[dict[str, Any]]:
+        records = self.memory_recorder.store.query(
+            MemoryQuery(task_ids=[task_id], tags=["tool_result"])
+        )
+        summaries: list[dict[str, Any]] = []
+        for record in records:
+            result = record.payload.get("result", {})
+            if result.get("attempt_id") != attempt_id:
+                continue
+            summaries.append(
+                {
+                    "tool_id": result.get("tool_id"),
+                    "status": result.get("status"),
+                    "duration_seconds": result.get("duration_seconds"),
+                    "error_type": result.get("error_type"),
+                }
+            )
+        return summaries
