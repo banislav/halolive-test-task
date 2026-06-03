@@ -290,6 +290,8 @@ def test_runtime_engine_records_unified_memory_for_run_events() -> None:
             "gate_judgment",
             "replan_result",
             "plan_transition",
+            "agent_lifecycle",
+            "task_attempt",
         }
     )
     assert {
@@ -306,4 +308,6 @@ def test_runtime_engine_records_unified_memory_for_run_events() -> None:
         "gate_judgment",
         "replan_result",
         "plan_transition",
+        "agent_lifecycle",
+        "task_attempt",
     }.issubset(tags)

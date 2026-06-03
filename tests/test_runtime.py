@@ -1,10 +1,13 @@
 import logging
+import time
 
+import pytest
 from langchain_core.runnables import RunnableLambda
 
 from deep_agents.models import (
     AgentAssignment,
     AgentKind,
+    AgentLifecycleState,
     AgentProfile,
     DiscoveryPlan,
     ExecutionPlan,
@@ -17,6 +20,7 @@ from deep_agents.models import (
     JudgeRecommendation,
     JudgeVerdict,
     MemoryKind,
+    MemoryQuery,
     Milestone,
     Objective,
     ObserverHealth,
@@ -30,13 +34,16 @@ from deep_agents.models import (
     PromptQueueItem,
     PromptReasoningInput,
     PromptResponse,
+    RetryPolicy,
     RuntimeCommand,
     RuntimeCommandResult,
     RuntimeCommandStatus,
     RuntimeCommandType,
     RuntimeReplanStatus,
     Task,
+    TaskAttemptStatus,
     TaskCard,
+    TaskInvocation,
     TaskStatus,
     Wave,
 )
@@ -56,6 +63,8 @@ from deep_agents.runtime import (
     RuntimeCommandExecutor,
     RuntimeEngine,
     RuntimeReplanner,
+    TaskAttemptRunError,
+    TaskAttemptRunner,
     TaskExecutionContext,
     TaskRunResult,
 )
@@ -138,6 +147,23 @@ def build_replan_trigger() -> RuntimeCommandResult:
         ),
         plan_state=PlanState(objective=Objective(raw="Test plan")),
         execution_plan=build_execution_plan(),
+    )
+
+
+def build_attempt_task(
+    *,
+    max_retries: int = 1,
+    timeout_seconds: int = 5,
+) -> TaskCard:
+    return TaskCard(
+        id="T-attempt",
+        name="Attempted task",
+        wave=0,
+        assigned_to=AgentAssignment(type=AgentKind.WORKER, name="Worker"),
+        invocation=TaskInvocation(
+            timeout_seconds=timeout_seconds,
+            retry_policy=RetryPolicy(max_retries=max_retries),
+        ),
     )
 
 
@@ -732,6 +758,94 @@ def test_runtime_engine_runs_dependent_tasks_to_completion() -> None:
         "T2": "completed",
     }
     assert list(final_state["results"]) == ["T1", "T2"]
+    assert len(final_state["task_attempts"]) == 2
+    assert final_state["task_attempts"][0].status == TaskAttemptStatus.SUCCEEDED
+    assert [event.state for event in final_state["task_attempts"][0].lifecycle_events] == [
+        AgentLifecycleState.SPAWNED,
+        AgentLifecycleState.SKILLS_LOADED,
+        AgentLifecycleState.CONTEXT_LOADED,
+        AgentLifecycleState.EXECUTING,
+        AgentLifecycleState.REPORTING,
+        AgentLifecycleState.TERMINATED,
+    ]
+
+
+def test_task_attempt_runner_retries_failed_attempt_then_succeeds() -> None:
+    calls = 0
+    task = build_attempt_task(max_retries=1)
+    store = InMemoryStore()
+
+    def flaky_worker(_: TaskCard, __: TaskCard | TaskExecutionContext) -> TaskRunResult:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("transient failure")
+        return TaskRunResult(task_id=task.id, output={"ok": True})
+
+    result, attempts = TaskAttemptRunner(
+        invoker=flaky_worker,
+        memory_recorder=MemoryRecorder(store),
+        plan_id="EP-attempts",
+    ).invoke(task, task)
+
+    assert result.output == {"ok": True}
+    assert [attempt.status for attempt in attempts] == [
+        TaskAttemptStatus.RETRYING,
+        TaskAttemptStatus.SUCCEEDED,
+    ]
+    assert AgentLifecycleState.RETRYING in [
+        event.state for event in attempts[0].lifecycle_events
+    ]
+    assert [record.tags for record in store.query(MemoryQuery(tags=["task_attempt"]))] == [
+        ["task_attempt", "retrying"],
+        ["task_attempt", "succeeded"],
+    ]
+
+
+def test_task_attempt_runner_records_timeout_and_retries() -> None:
+    calls = 0
+    task = build_attempt_task(max_retries=1, timeout_seconds=1)
+    store = InMemoryStore()
+
+    def slow_then_success(_: TaskCard, __: TaskCard | TaskExecutionContext) -> TaskRunResult:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            time.sleep(2)
+        return TaskRunResult(task_id=task.id, output={"attempt": calls})
+
+    result, attempts = TaskAttemptRunner(
+        invoker=slow_then_success,
+        memory_recorder=MemoryRecorder(store),
+        plan_id="EP-attempts",
+    ).invoke(task, task)
+
+    assert result.output == {"attempt": 2}
+    assert attempts[0].status == TaskAttemptStatus.RETRYING
+    assert attempts[0].error_type == "timeout"
+    assert attempts[1].status == TaskAttemptStatus.SUCCEEDED
+
+
+def test_task_attempt_runner_raises_after_retry_exhaustion() -> None:
+    task = build_attempt_task(max_retries=1)
+    store = InMemoryStore()
+
+    def failing_worker(_: TaskCard, __: TaskCard | TaskExecutionContext) -> TaskRunResult:
+        raise ValueError("still broken")
+
+    with pytest.raises(TaskAttemptRunError) as exc_info:
+        TaskAttemptRunner(
+            invoker=failing_worker,
+            memory_recorder=MemoryRecorder(store),
+            plan_id="EP-attempts",
+        ).invoke(task, task)
+
+    assert isinstance(exc_info.value.last_exception, ValueError)
+    assert [attempt.status for attempt in exc_info.value.attempts] == [
+        TaskAttemptStatus.RETRYING,
+        TaskAttemptStatus.FAILED,
+    ]
+    assert exc_info.value.attempts[-1].error_message == "still broken"
 
 
 def test_runtime_engine_routes_task_to_registered_agent() -> None:
@@ -871,6 +985,16 @@ def test_runtime_engine_runs_intra_task_handoff_chain() -> None:
         "extract_confirmation",
     ]
     assert final_state["results"]["T1"].output == {"confirmation": "ABC-123"}
+    assert len(final_state["task_attempts"]) == 1
+    assert final_state["task_attempts"][0].status == TaskAttemptStatus.SUCCEEDED
+    assert [event.state for event in final_state["task_attempts"][0].lifecycle_events] == [
+        AgentLifecycleState.SPAWNED,
+        AgentLifecycleState.SKILLS_LOADED,
+        AgentLifecycleState.CONTEXT_LOADED,
+        AgentLifecycleState.EXECUTING,
+        AgentLifecycleState.REPORTING,
+        AgentLifecycleState.TERMINATED,
+    ]
     handoff_records = [
         record
         for record in final_state["memory_records"]
