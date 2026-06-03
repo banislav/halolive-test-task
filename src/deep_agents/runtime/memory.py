@@ -5,6 +5,7 @@ from typing import Protocol
 from uuid import uuid4
 
 from deep_agents.models import (
+    AgentLifecycleEvent,
     ArtifactRef,
     ExecutionPlan,
     GateJudgment,
@@ -20,6 +21,10 @@ from deep_agents.models import (
     RuntimeCommand,
     RuntimeCommandResult,
     RuntimeReplanResult,
+    TaskAttemptRecord,
+    ToolCallRequest,
+    ToolCallResult,
+    ToolDefinition,
 )
 from deep_agents.models.base import JsonObject
 from deep_agents.runtime.context import TaskExecutionContext
@@ -228,6 +233,76 @@ class MemoryRecorder:
         for artifact in result.artifacts:
             records.append(self.record_artifact(artifact, task_id=result.task_id, plan_id=plan_id))
         return records
+
+    def record_lifecycle_event(
+        self,
+        event: AgentLifecycleEvent,
+        *,
+        plan_id: str | None,
+    ) -> MemoryRecord:
+        """Record an agent lifecycle transition for the current session."""
+        return self.put(
+            kind=MemoryKind.SESSION,
+            source="task_attempt_runner",
+            task_id=event.task_id,
+            plan_id=plan_id,
+            tags=["agent_lifecycle", event.state],
+            payload={"event": event.model_dump(mode="json")},
+        )
+
+    def record_task_attempt(
+        self,
+        attempt: TaskAttemptRecord,
+        *,
+        plan_id: str | None,
+    ) -> MemoryRecord:
+        """Record one task execution attempt for the current session."""
+        return self.put(
+            kind=MemoryKind.SESSION,
+            source="task_attempt_runner",
+            task_id=attempt.task_id,
+            plan_id=plan_id,
+            tags=["task_attempt", attempt.status],
+            payload={"attempt": attempt.model_dump(mode="json")},
+        )
+
+    def record_tool_call(
+        self,
+        *,
+        request: ToolCallRequest,
+        definition: ToolDefinition,
+        plan_id: str | None,
+        started_at: str,
+    ) -> MemoryRecord:
+        """Record a requested tool call before middleware execution."""
+        return self.put(
+            kind=MemoryKind.SESSION,
+            source="tool_middleware",
+            task_id=request.task_id,
+            plan_id=plan_id,
+            tags=["tool_call", request.tool_id],
+            payload={
+                "request": request.model_dump(mode="json"),
+                "definition": definition.model_dump(mode="json"),
+                "started_at": started_at,
+            },
+        )
+
+    def record_tool_result(
+        self,
+        result: ToolCallResult,
+        *,
+        plan_id: str | None,
+    ) -> MemoryRecord:
+        """Record the captured output or middleware decision for a tool call."""
+        return self.put(
+            kind=MemoryKind.SESSION,
+            source="tool_middleware",
+            task_id=result.task_id,
+            plan_id=plan_id,
+            tags=["tool_result", result.tool_id, result.status],
+            payload={"result": result.model_dump(mode="json")},
+        )
 
     def record_artifact(
         self,
