@@ -78,6 +78,13 @@ from deep_agents.models.skills import (
     SkillSubSkill,
     SkillTool,
 )
+from deep_agents.models.tools import (
+    ToolCallRequest,
+    ToolCallResult,
+    ToolCallStatus,
+    ToolDefinition,
+    ToolSafetyLevel,
+)
 
 __all__ = [
     "AcceptanceCriterion",
@@ -150,6 +157,11 @@ __all__ = [
     "TaskCard",
     "TaskInvocation",
     "TaskStatus",
+    "ToolCallRequest",
+    "ToolCallResult",
+    "ToolCallStatus",
+    "ToolDefinition",
+    "ToolSafetyLevel",
     "TopologyPattern",
     "Wave",
 ]
