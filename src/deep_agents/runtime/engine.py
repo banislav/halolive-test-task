@@ -32,9 +32,12 @@ from deep_agents.models import (
     RuntimeCommandStatus,
     RuntimeCommandType,
     RuntimeReplanResult,
+    TaskAttemptRecord,
+    TaskAttemptStatus,
     TaskCard,
 )
 from deep_agents.runtime.agent_registry import AgentRegistry
+from deep_agents.runtime.task_attempts import TaskAttemptRunError, TaskAttemptRunner
 from deep_agents.runtime.command_executor import RuntimeCommandExecutor
 from deep_agents.runtime.context import ContextAssembler, TaskExecutionContext
 from deep_agents.runtime.handoffs import HandoffRunner
@@ -66,6 +69,7 @@ class RuntimeGraphState(TypedDict):
     runtime_commands: NotRequired[list[RuntimeCommand]]
     command_results: NotRequired[list[RuntimeCommandResult]]
     replan_results: NotRequired[list[RuntimeReplanResult]]
+    task_attempts: NotRequired[list[TaskAttemptRecord]]
     memory_records: NotRequired[list[MemoryRecord]]
 
 
@@ -132,6 +136,7 @@ class RuntimeEngine:
             "runtime_commands": [],
             "command_results": [],
             "replan_results": [],
+            "task_attempts": [],
             "memory_records": [],
         }
         self.memory_recorder.record_plan_snapshot(
@@ -188,6 +193,7 @@ class RuntimeEngine:
             "runtime_commands": [],
             "command_results": [],
             "replan_results": [],
+            "task_attempts": [],
             "memory_records": [],
         }
         self.memory_recorder.record_plan_snapshot(
@@ -309,8 +315,17 @@ class RuntimeEngine:
                 payload=ProgressSignalPayload(status="worker_started"),
             )
             worker_input = self._worker_input(task, state)
-            result = self._invoke_task_agent(task, worker_input, state)
-            state["latest_result"] = self._coerce_result(task.id, result)
+            result, attempts = TaskAttemptRunner(
+                invoker=lambda current_task, current_input: self._invoke_task_agent(
+                    current_task,
+                    current_input,
+                    state,
+                ),
+                memory_recorder=self.memory_recorder,
+                plan_id=state["execution_plan"].id,
+            ).invoke(task, worker_input)
+            state.setdefault("task_attempts", []).extend(attempts)
+            state["latest_result"] = result
             self.memory_recorder.record_task_result(
                 state["latest_result"],
                 plan_id=state["execution_plan"].id,
@@ -332,9 +347,37 @@ class RuntimeEngine:
                         relevance_score=1.0,
                         data={"output": state["latest_result"].output},
                     ),
-                )
+            )
             logger.info("worker completed", extra={"task_id": task.id})
             return state
+        except TaskAttemptRunError as exc:
+            state.setdefault("task_attempts", []).extend(exc.attempts)
+            PlanTracker(state["plan_state"], state["execution_plan"]).apply_task_failure(
+                task.id,
+                recoverable=True,
+            )
+            self._record_retry_exhaustion_command(state, exc)
+            self._publish_signal(
+                state,
+                task_id=task.id,
+                signal_type=ProgressSignalType.ERROR,
+                payload=ProgressSignalPayload(
+                    status="worker_failed",
+                    error_type=exc.last_exception.__class__.__name__,
+                    detail=str(exc.last_exception),
+                    data={
+                        "attempt_count": len(exc.attempts),
+                        "last_attempt_status": exc.attempts[-1].status
+                        if exc.attempts
+                        else None,
+                    },
+                ),
+            )
+            logger.exception(
+                "worker failed",
+                extra={"task_id": task.id, "attempt_count": len(exc.attempts)},
+            )
+            raise exc.last_exception from exc
         except Exception:
             self._publish_signal(
                 state,
@@ -649,6 +692,44 @@ class RuntimeEngine:
             },
         )
         return results
+
+    def _record_retry_exhaustion_command(
+        self,
+        state: RuntimeGraphState,
+        error: TaskAttemptRunError,
+    ) -> None:
+        if not error.attempts or error.attempts[-1].status != TaskAttemptStatus.TIMED_OUT:
+            return
+
+        command = RuntimeCommand(
+            type=RuntimeCommandType.REQUEST_REPLAN,
+            task_id=error.task_id,
+            reason="Task timed out after retry exhaustion.",
+            payload={
+                "attempt_ids": [attempt.id for attempt in error.attempts],
+                "last_attempt_status": error.attempts[-1].status,
+            },
+            source="task_attempt_runner",
+        )
+        result = RuntimeCommandResult(
+            command=command,
+            status=RuntimeCommandStatus.IGNORED,
+            reason=(
+                "Recorded timeout exhaustion for audit; worker failure aborts this invocation "
+                "before boundary-time replanning can continue."
+            ),
+            affected_task_ids=[error.task_id],
+        )
+        state.setdefault("runtime_commands", []).append(command)
+        state.setdefault("command_results", []).append(result)
+        self.memory_recorder.record_runtime_command(
+            command,
+            plan_id=state["execution_plan"].id,
+        )
+        self.memory_recorder.record_command_result(
+            result,
+            plan_id=state["execution_plan"].id,
+        )
 
     def _maybe_replan_from_command_results(
         self,
