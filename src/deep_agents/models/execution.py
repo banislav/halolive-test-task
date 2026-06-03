@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from enum import StrEnum
+
 from pydantic import Field, model_validator
 
 from deep_agents.models.agents import AgentAssignment
@@ -29,6 +31,23 @@ class TaskResponsiveness(DeepAgentsModel):
     early_findings_enabled: bool = True
 
 
+class TopologyPattern(StrEnum):
+    SUBAGENTS = "subagents"
+    HANDOFFS = "handoffs"
+    ROUTER = "router"
+    SKILLS = "skills"
+    CUSTOM_WORKFLOW = "custom_workflow"
+
+
+class HandoffStep(DeepAgentsModel):
+    id: str
+    name: str
+    assigned_to: AgentAssignment
+    instruction: str
+    input_schema: JsonObject = Field(default_factory=dict)
+    expected_output_schema: JsonObject = Field(default_factory=dict)
+
+
 class TaskCard(DeepAgentsModel):
     id: str
     name: str
@@ -43,6 +62,7 @@ class TaskCard(DeepAgentsModel):
     input_artifacts: list[ArtifactRef] = Field(default_factory=list)
     estimated_complexity: str = "medium"
     risks: list[Risk] = Field(default_factory=list)
+    handoff_chain: list[HandoffStep] = Field(default_factory=list)
 
 
 class Wave(DeepAgentsModel):
@@ -50,6 +70,7 @@ class Wave(DeepAgentsModel):
     name: str | None = None
     blocked_by: list[str] = Field(default_factory=list)
     task_ids: list[str] = Field(default_factory=list)
+    topology: TopologyPattern = TopologyPattern.SUBAGENTS
 
 
 class DependencyGraph(DeepAgentsModel):

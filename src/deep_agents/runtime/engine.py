@@ -34,8 +34,10 @@ from deep_agents.models import (
     RuntimeReplanResult,
     TaskCard,
 )
+from deep_agents.runtime.agent_registry import AgentRegistry
 from deep_agents.runtime.command_executor import RuntimeCommandExecutor
 from deep_agents.runtime.context import ContextAssembler, TaskExecutionContext
+from deep_agents.runtime.handoffs import HandoffRunner
 from deep_agents.runtime.memory import InMemoryStore, MemoryRecorder, MemoryStore
 from deep_agents.runtime.memory_context import build_memory_context
 from deep_agents.runtime.observability import ProgressSignalBus
@@ -83,6 +85,7 @@ class RuntimeEngine:
         | None = None,
         command_executor: RuntimeCommandExecutor | None = None,
         runtime_replanner: RuntimeReplanner | None = None,
+        agent_registry: AgentRegistry | None = None,
         memory_store: MemoryStore | None = None,
         progress_bus: ProgressSignalBus | None = None,
         recursion_limit: int = 100,
@@ -103,6 +106,7 @@ class RuntimeEngine:
         )
         self.command_executor = command_executor or RuntimeCommandExecutor()
         self.runtime_replanner = runtime_replanner
+        self.agent_registry = agent_registry
         self.progress_bus = progress_bus or ProgressSignalBus()
         self.recursion_limit = recursion_limit
         self.graph = self._build_graph()
@@ -304,7 +308,8 @@ class RuntimeEngine:
                 signal_type=ProgressSignalType.HEARTBEAT,
                 payload=ProgressSignalPayload(status="worker_started"),
             )
-            result = self.worker.invoke(self._worker_input(task, state))
+            worker_input = self._worker_input(task, state)
+            result = self._invoke_task_agent(task, worker_input, state)
             state["latest_result"] = self._coerce_result(task.id, result)
             self.memory_recorder.record_task_result(
                 state["latest_result"],
@@ -354,7 +359,8 @@ class RuntimeEngine:
                 signal_type=ProgressSignalType.HEARTBEAT,
                 payload=ProgressSignalPayload(status="worker_started"),
             )
-            result = await self.worker.ainvoke(self._worker_input(task, state))
+            worker_input = self._worker_input(task, state)
+            result = await self._ainvoke_task_agent(task, worker_input, state)
             state["latest_result"] = self._coerce_result(task.id, result)
             self.memory_recorder.record_task_result(
                 state["latest_result"],
@@ -741,6 +747,41 @@ class RuntimeEngine:
         )
         return context
 
+    def _invoke_task_agent(
+        self,
+        task: TaskCard,
+        worker_input: TaskCard | TaskExecutionContext,
+        state: RuntimeGraphState,
+    ) -> TaskRunResult | dict[str, Any]:
+        if task.handoff_chain:
+            return HandoffRunner(
+                agent_registry=self.agent_registry,
+                default_worker=self.worker,
+                memory_recorder=self.memory_recorder,
+            ).invoke(
+                task=task,
+                parent_input=worker_input,
+                plan_id=state["execution_plan"].id,
+            )
+        runnable = self._resolve_task_runnable(task)
+        return runnable.invoke(worker_input)
+
+    async def _ainvoke_task_agent(
+        self,
+        task: TaskCard,
+        worker_input: TaskCard | TaskExecutionContext,
+        state: RuntimeGraphState,
+    ) -> TaskRunResult | dict[str, Any]:
+        if task.handoff_chain:
+            return self._invoke_task_agent(task, worker_input, state)
+        runnable = self._resolve_task_runnable(task)
+        return await runnable.ainvoke(worker_input)
+
+    def _resolve_task_runnable(self, task: TaskCard) -> Runnable[Any, Any]:
+        if self.agent_registry is None:
+            return self.worker
+        return self.agent_registry.resolve(task.assigned_to) or self.worker
+
     def _is_terminal(self, status: PlanStatus | str) -> bool:
         return PlanStatus(status) in {PlanStatus.COMPLETED, PlanStatus.FAILED, PlanStatus.PAUSED}
 
@@ -764,7 +805,9 @@ class RuntimeEngine:
     def _coerce_result(self, task_id: str, value: TaskRunResult | dict[str, Any]) -> TaskRunResult:
         if isinstance(value, TaskRunResult):
             return value
-        return TaskRunResult(task_id=task_id, **value)
+        data = dict(value)
+        data.setdefault("task_id", task_id)
+        return TaskRunResult(**data)
 
     def _coerce_verdict(self, value: JudgeVerdict | dict[str, Any]) -> JudgeVerdict:
         if isinstance(value, JudgeVerdict):

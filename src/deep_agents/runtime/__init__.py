@@ -1,5 +1,6 @@
 """Runtime primitives for coordinating deep-agent plans."""
 
+from deep_agents.runtime.agent_registry import AgentRegistry
 from deep_agents.runtime.command_executor import RuntimeCommandExecutor
 from deep_agents.runtime.context import (
     ArtifactStore,
@@ -17,6 +18,7 @@ from deep_agents.runtime.events import (
     TaskCompleted,
     TaskFailed,
 )
+from deep_agents.runtime.handoffs import HandoffRunner, HandoffStepInput
 from deep_agents.runtime.memory import InMemoryStore, MemoryRecorder, MemoryStore
 from deep_agents.runtime.observability import ObserverJudge, ProcessJudge, ProgressSignalBus
 from deep_agents.runtime.plan_tracker import PlanTracker
@@ -27,9 +29,12 @@ from deep_agents.runtime.results import TaskRunResult
 
 __all__ = [
     "ArtifactStore",
+    "AgentRegistry",
     "ContextBudgetReport",
     "ContextAssembler",
     "Dispatcher",
+    "HandoffRunner",
+    "HandoffStepInput",
     "InMemoryStore",
     "JudgeVerdictReceived",
     "MemoryRecorder",

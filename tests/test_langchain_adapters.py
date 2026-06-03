@@ -9,6 +9,7 @@ from deep_agents.langchain import (
     build_checkpoint_judge_messages,
     build_content_reasoning_agent,
     build_content_reasoning_messages,
+    build_execution_planner_messages,
     build_judge_messages,
     build_prompt_classifier,
     build_prompt_classifier_messages,
@@ -23,10 +24,13 @@ from deep_agents.models import (
     AcceptanceCriterion,
     AgentAssignment,
     AgentKind,
+    DiscoveryPlan,
     ExecutionPlan,
+    ExecutionPlannerInput,
     Gate,
     GateDecision,
     GateJudgment,
+    HandoffStep,
     JudgeRecommendation,
     JudgeVerdict,
     Objective,
@@ -41,7 +45,7 @@ from deep_agents.models import (
     TaskCard,
     Wave,
 )
-from deep_agents.runtime import TaskExecutionContext, TaskRunResult
+from deep_agents.runtime import HandoffStepInput, TaskExecutionContext, TaskRunResult
 from deep_agents.skills import SkillLoader, SkillRegistry
 
 
@@ -126,6 +130,29 @@ def test_worker_prompt_includes_assembled_task_context() -> None:
     assert "Loaded skills:" in content
 
 
+def test_worker_prompt_includes_handoff_step_context_without_routing_chatter() -> None:
+    step_input = HandoffStepInput(
+        parent_task=build_task_card(),
+        step=HandoffStep(
+            id="extract_confirmation",
+            name="Extract confirmation",
+            assigned_to=AgentAssignment(type=AgentKind.SPECIALIST, name="DataExtractor"),
+            instruction="Extract confirmation data.",
+        ),
+        previous_output={"form": "submitted"},
+        shared_state={"fill_form": {"status": "done"}},
+    )
+
+    messages = build_worker_messages(step_input)
+
+    content = _joined_message_content(messages)
+    assert "intra-task handoff agent" in content
+    assert "Handoff step JSON:" in content
+    assert "Previous step output JSON:" in content
+    assert "Extract confirmation data." in content
+    assert "do not paraphrase" in content
+
+
 def test_judge_prompt_includes_task_result() -> None:
     messages = build_judge_messages(
         build_task_card(),
@@ -136,6 +163,20 @@ def test_judge_prompt_includes_task_result() -> None:
     assert "JSON" in content
     assert "Task result:" in content
     assert '"summary": "Done"' in content
+
+
+def test_execution_planner_prompt_includes_topology_rules() -> None:
+    messages = build_execution_planner_messages(
+        ExecutionPlannerInput(
+            discovery_plan=DiscoveryPlan(objective=Objective(raw="Test plan")),
+        )
+    )
+
+    content = _joined_message_content(messages)
+    assert "Select a topology per wave" in content
+    assert "subagents" in content
+    assert "handoff_chain" in content
+    assert "Inter-task dependencies are not handoffs" in content
 
 
 def test_checkpoint_judge_prompt_includes_gate_and_runtime_context() -> None:
