@@ -5,6 +5,7 @@ from deep_agents.runtime.browser import (
     BROWSER_TOOL_IDS,
     BrowserRuntimeError,
     BrowserSession,
+    BrowserWorker,
     build_browser_tool_registry,
 )
 from deep_agents.runtime.command_executor import RuntimeCommandExecutor
@@ -41,6 +42,7 @@ __all__ = [
     "BROWSER_TOOL_IDS",
     "BrowserRuntimeError",
     "BrowserSession",
+    "BrowserWorker",
     "ContextBudgetReport",
     "ContextAssembler",
     "Dispatcher",
