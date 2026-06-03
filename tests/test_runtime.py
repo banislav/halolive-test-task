@@ -19,6 +19,7 @@ from deep_agents.models import (
     InterruptPriority,
     JudgeRecommendation,
     JudgeVerdict,
+    LongRunningTaskConfig,
     MemoryKind,
     MemoryQuery,
     Milestone,
@@ -53,6 +54,8 @@ from deep_agents.runtime import (
     Dispatcher,
     HandoffStepInput,
     InMemoryStore,
+    LongRunningContext,
+    LongRunningRunRegistry,
     MemoryRecorder,
     ObserverJudge,
     PlanTracker,
@@ -67,6 +70,7 @@ from deep_agents.runtime import (
     TaskAttemptRunner,
     TaskExecutionContext,
     TaskRunResult,
+    current_long_running_context,
 )
 
 
@@ -154,6 +158,7 @@ def build_attempt_task(
     *,
     max_retries: int = 1,
     timeout_seconds: int = 5,
+    long_running: LongRunningTaskConfig | None = None,
 ) -> TaskCard:
     return TaskCard(
         id="T-attempt",
@@ -163,6 +168,7 @@ def build_attempt_task(
         invocation=TaskInvocation(
             timeout_seconds=timeout_seconds,
             retry_policy=RetryPolicy(max_retries=max_retries),
+            long_running=long_running,
         ),
     )
 
@@ -770,6 +776,57 @@ def test_runtime_engine_runs_dependent_tasks_to_completion() -> None:
     ]
 
 
+def test_runtime_engine_records_long_running_attempt_summary() -> None:
+    assignment = AgentAssignment(type=AgentKind.WORKER, name="Worker")
+    plan = ExecutionPlan(
+        id="EP-long",
+        objective="Run long task",
+        waves=[Wave(index=0, task_ids=["T-long"])],
+        task_cards=[
+            TaskCard(
+                id="T-long",
+                name="Long task",
+                wave=0,
+                assigned_to=assignment,
+                invocation=TaskInvocation(long_running=LongRunningTaskConfig()),
+            )
+        ],
+    )
+
+    def run_task(_: TaskCard) -> TaskRunResult:
+        context = current_long_running_context()
+        assert context is not None
+        context.heartbeat(status="working")
+        context.checkpoint({"processed": 3}, cursor={"offset": 3}, percent_complete=75)
+        return TaskRunResult(task_id="T-long", output={"done": True})
+
+    def judge_task(payload: dict[str, object]) -> JudgeVerdict:
+        result = payload["result"]
+        assert isinstance(result, TaskRunResult)
+        return JudgeVerdict(
+            task_id=result.task_id,
+            verdict="pass",
+            overall_confidence=1.0,
+            recommendation=JudgeRecommendation.ADVANCE,
+        )
+
+    store = InMemoryStore()
+    final_state = RuntimeEngine(
+        worker=RunnableLambda(run_task),
+        judge=RunnableLambda(judge_task),
+        memory_store=store,
+    ).invoke(plan, PlanState(objective=Objective(raw="Run long task")))
+
+    attempt = final_state["task_attempts"][0]
+    assert attempt.result["long_running"]["state"]["status"] == "completed"
+    assert attempt.result["long_running"]["state"]["checkpoint_ids"]
+    assert [
+        record.tags[0]
+        for record in store.by_task("T-long")
+        if record.tags[0].startswith("long_running")
+    ] == ["long_running_checkpoint", "long_running_state"]
+
+
 def test_task_attempt_runner_retries_failed_attempt_then_succeeds() -> None:
     calls = 0
     task = build_attempt_task(max_retries=1)
@@ -824,6 +881,154 @@ def test_task_attempt_runner_records_timeout_and_retries() -> None:
     assert attempts[0].status == TaskAttemptStatus.RETRYING
     assert attempts[0].error_type == "timeout"
     assert attempts[1].status == TaskAttemptStatus.SUCCEEDED
+
+
+def test_long_running_context_emits_signals_memory_and_checkpoints() -> None:
+    store = InMemoryStore()
+    bus = ProgressSignalBus()
+    registry = LongRunningRunRegistry()
+    context = LongRunningContext(
+        task_id="T-long",
+        attempt_id="A1",
+        config=LongRunningTaskConfig(max_elapsed_seconds=10, max_memory_mb=100),
+        registry=registry,
+        memory_recorder=MemoryRecorder(store),
+        progress_bus=bus,
+        plan_id="EP-long",
+    )
+
+    context.heartbeat(status="working", percent_complete=10)
+    context.progress(status="processed", items_processed=5)
+    context.finding({"partial": "value"}, relevance_score=0.9)
+    checkpoint = context.checkpoint(
+        {"processed": 5},
+        cursor={"offset": 5},
+        percent_complete=50,
+    )
+    warning = context.observe_resources(elapsed_seconds=11, memory_mb=150)
+    context.complete()
+
+    assert checkpoint.cursor == {"offset": 5}
+    assert warning is not None
+    assert [signal.payload.status for signal in bus.signals(task_id="T-long")] == [
+        "working",
+        "processed",
+        "long_running_finding",
+        "long_running_checkpointed",
+        "long_running_resource_warning",
+    ]
+    assert [record.tags[0] for record in store.by_task("T-long")] == [
+        "progress_signal",
+        "progress_signal",
+        "progress_signal",
+        "long_running_checkpoint",
+        "progress_signal",
+        "long_running_resource",
+        "progress_signal",
+        "long_running_state",
+    ]
+
+
+def test_long_running_context_respects_disabled_progress_and_findings() -> None:
+    store = InMemoryStore()
+    bus = ProgressSignalBus()
+    context = LongRunningContext(
+        task_id="T-long",
+        attempt_id="A1",
+        config=LongRunningTaskConfig(progress_reporting=False, early_findings_enabled=False),
+        registry=LongRunningRunRegistry(),
+        memory_recorder=MemoryRecorder(store),
+        progress_bus=bus,
+        plan_id="EP-long",
+    )
+
+    assert context.progress(status="hidden") is None
+    assert context.finding({"partial": "value"}) is None
+    assert bus.signals(task_id="T-long") == []
+
+
+def test_long_running_task_attempt_records_summary_and_resumes_from_checkpoint() -> None:
+    calls = 0
+    task = build_attempt_task(
+        max_retries=1,
+        long_running=LongRunningTaskConfig(),
+    )
+    store = InMemoryStore()
+    bus = ProgressSignalBus()
+    registry = LongRunningRunRegistry()
+
+    def worker(_: TaskCard, __: TaskCard | TaskExecutionContext) -> TaskRunResult:
+        nonlocal calls
+        calls += 1
+        context = current_long_running_context()
+        assert context is not None
+        if calls == 1:
+            context.checkpoint({"processed": 1}, cursor={"offset": 1}, percent_complete=25)
+            raise RuntimeError("resume me")
+        assert context.resume_cursor == {"offset": 1}
+        context.heartbeat(status="resumed")
+        return TaskRunResult(task_id=task.id, output={"resumed_from": context.resume_cursor})
+
+    result, attempts = TaskAttemptRunner(
+        invoker=worker,
+        memory_recorder=MemoryRecorder(store),
+        plan_id="EP-attempts",
+        progress_bus=bus,
+        long_running_registry=registry,
+    ).invoke(task, task)
+
+    assert result.output == {"resumed_from": {"offset": 1}}
+    assert [attempt.status for attempt in attempts] == [
+        TaskAttemptStatus.RETRYING,
+        TaskAttemptStatus.SUCCEEDED,
+    ]
+    assert attempts[1].result["long_running"]["resume_from"]["cursor"] == {"offset": 1}
+    assert attempts[1].result["long_running"]["state"]["status"] == "completed"
+
+
+def test_runtime_command_executor_updates_long_running_control_state() -> None:
+    registry = LongRunningRunRegistry()
+    context = LongRunningContext(
+        task_id="T1",
+        attempt_id="A1",
+        config=LongRunningTaskConfig(),
+        registry=registry,
+        memory_recorder=MemoryRecorder(InMemoryStore()),
+        progress_bus=ProgressSignalBus(),
+        plan_id="EP1",
+    )
+    executor = RuntimeCommandExecutor(long_running_registry=registry)
+    plan_state = PlanState(objective=Objective(raw="Test plan"))
+    plan = build_execution_plan()
+    tracker = PlanTracker(plan_state, plan)
+    tracker.mark_running("T1")
+
+    timeout = executor.execute(
+        RuntimeCommand(
+            type=RuntimeCommandType.ADJUST_TIMEOUT,
+            task_id="T1",
+            reason="Needs more time.",
+            payload={"value": 180},
+            source="test",
+        ),
+        plan_state=plan_state,
+        execution_plan=plan,
+    )
+    pause = executor.execute(
+        RuntimeCommand(
+            type=RuntimeCommandType.PAUSE_TASK,
+            task_id="T1",
+            reason="Pause cooperatively.",
+            source="test",
+        ),
+        plan_state=plan_state,
+        execution_plan=plan,
+    )
+
+    assert timeout.status == RuntimeCommandStatus.APPLIED
+    assert context.state.timeout_extension_seconds == 180
+    assert pause.status == RuntimeCommandStatus.APPLIED
+    assert context.should_cancel() is True
 
 
 def test_task_attempt_runner_raises_after_retry_exhaustion() -> None:
