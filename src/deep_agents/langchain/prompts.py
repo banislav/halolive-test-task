@@ -8,6 +8,7 @@ from deep_agents.models import (
     ExecutionPlan,
     ExecutionPlannerInput,
     Gate,
+    HandoffStep,
     Milestone,
     PlannerInput,
     PlanState,
@@ -16,6 +17,7 @@ from deep_agents.models import (
     TaskCard,
 )
 from deep_agents.runtime import TaskExecutionContext, TaskRunResult
+from deep_agents.runtime.handoffs import HandoffStepInput
 
 INITIAL_PLANNER_SYSTEM_PROMPT = """You are InitialPlannerAgent.
 Transform a raw user objective into a DiscoveryPlan.
@@ -26,11 +28,25 @@ risk_register, and dependency_graph."""
 EXECUTION_PLANNER_SYSTEM_PROMPT = """You are ExecutionPlannerAgent.
 Convert a DiscoveryPlan into a dispatchable ExecutionPlan.
 Return only valid JSON matching the ExecutionPlan schema.
-Include waves, task_cards, dependency_graph, and data_flow."""
+Include waves, task_cards, dependency_graph, and data_flow.
+Select a topology per wave using one of: subagents, handoffs, router, skills,
+custom_workflow.
+Use subagents for independent task invocations with clean context isolation.
+Use handoff_chain only for sequential specialist handoffs inside one logical task.
+Never model inter-task dependencies as handoffs; the Dispatcher injects artifacts and
+context into a new subagent invocation for downstream tasks.
+Avoid routing chatter in subagent context."""
 
 WORKER_SYSTEM_PROMPT = """You are a deep-agent worker.
 Execute exactly the assigned task card.
 Return only valid JSON matching the TaskRunResult schema.
+Use this JSON shape: {"task_id": "...", "output": {}, "artifacts": []}."""
+
+HANDOFF_STEP_SYSTEM_PROMPT = """You are a deep-agent intra-task handoff agent.
+Execute exactly the assigned handoff step.
+Use the parent task context, previous step output, and shared handoff state.
+Return only valid JSON matching the TaskRunResult schema.
+Forward your final result directly; do not paraphrase or add routing commentary.
 Use this JSON shape: {"task_id": "...", "output": {}, "artifacts": []}."""
 
 JUDGE_SYSTEM_PROMPT = """You are a read-only task completion judge.
@@ -117,6 +133,11 @@ def build_execution_planner_messages(planner_input: ExecutionPlannerInput) -> li
                         '{"id": "...", "objective": "...", "waves": [], '
                         '"task_cards": [], "dependency_graph": {}, "data_flow": {}}'
                     ),
+                    "Topology rules:",
+                    (
+                        "Wave.topology defaults to subagents. Add TaskCard.handoff_chain only "
+                        "for intra-task handoffs. Inter-task dependencies are not handoffs."
+                    ),
                 ]
             )
         ),
@@ -124,10 +145,19 @@ def build_execution_planner_messages(planner_input: ExecutionPlannerInput) -> li
 
 
 def build_worker_messages(
-    task_input: TaskCard | TaskExecutionContext,
+    task_input: TaskCard | TaskExecutionContext | HandoffStepInput,
     skill_context: str | None = None,
 ) -> list[BaseMessage]:
     """Build LangChain messages for executing a task card."""
+    if isinstance(task_input, HandoffStepInput):
+        skill_context = skill_context or _assignment_skill_text(task_input.step)
+        human_sections = [_handoff_step_input_text(task_input)]
+        if skill_context:
+            human_sections.extend(["", skill_context])
+        return [
+            SystemMessage(content=HANDOFF_STEP_SYSTEM_PROMPT),
+            HumanMessage(content="\n".join(human_sections)),
+        ]
     if isinstance(task_input, TaskExecutionContext):
         skill_context = skill_context if skill_context is not None else task_input.skill_context
         human_sections = [_task_execution_context_text(task_input)]
@@ -260,6 +290,15 @@ def _task_card_text(task: TaskCard) -> str:
     )
 
 
+def _assignment_skill_text(step: HandoffStep) -> str:
+    if not step.assigned_to.skills:
+        return ""
+    skills = "\n".join(
+        f"- {skill.id} ({skill.load_mode})" for skill in step.assigned_to.skills
+    )
+    return f"Assigned handoff step skills:\n{skills}"
+
+
 def _task_execution_context_text(context: TaskExecutionContext) -> str:
     dependency_results = {
         task_id: result.model_dump(mode="json")
@@ -282,6 +321,28 @@ def _task_execution_context_text(context: TaskExecutionContext) -> str:
             json.dumps(prior_summaries, indent=2),
             "Relevant artifacts JSON:",
             json.dumps(artifacts, indent=2),
+        ]
+    )
+
+
+def _handoff_step_input_text(step_input: HandoffStepInput) -> str:
+    parent_context = (
+        step_input.parent_context.model_dump(mode="json")
+        if step_input.parent_context is not None
+        else None
+    )
+    return "\n\n".join(
+        [
+            "Parent task JSON:",
+            step_input.parent_task.model_dump_json(indent=2),
+            "Handoff step JSON:",
+            step_input.step.model_dump_json(indent=2),
+            "Parent task context JSON:",
+            json.dumps(parent_context, indent=2),
+            "Previous step output JSON:",
+            json.dumps(step_input.previous_output, indent=2),
+            "Shared handoff state JSON:",
+            json.dumps(step_input.shared_state, indent=2),
         ]
     )
 
