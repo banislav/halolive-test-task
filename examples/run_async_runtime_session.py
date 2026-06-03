@@ -37,7 +37,7 @@ from deep_agents.runtime import (
 )
 from deep_agents.skills import SkillLoader, SkillRegistry
 
-OBJECTIVE = "Draft and refine a short summary of the async runtime session feature."
+OBJECTIVE = "Make a draft for online casino implementation"
 
 
 def build_plan() -> ExecutionPlan:
