@@ -10,6 +10,8 @@ from deep_agents.models import (
     ExecutionPlan,
     GateJudgment,
     JudgeVerdict,
+    LongRunningCheckpoint,
+    LongRunningRunState,
     MemoryKind,
     MemoryQuery,
     MemoryRecord,
@@ -264,6 +266,64 @@ class MemoryRecorder:
             plan_id=plan_id,
             tags=["task_attempt", attempt.status],
             payload={"attempt": attempt.model_dump(mode="json")},
+        )
+
+    def record_long_running_checkpoint(
+        self,
+        checkpoint: LongRunningCheckpoint,
+        *,
+        checkpoint_id: str,
+        plan_id: str | None,
+    ) -> MemoryRecord:
+        """Record a long-running checkpoint for cooperative resume."""
+        return self.put(
+            kind=MemoryKind.WORKING,
+            source="long_running_context",
+            task_id=checkpoint.task_id,
+            plan_id=plan_id,
+            tags=["long_running_checkpoint", checkpoint_id],
+            payload={
+                "checkpoint_id": checkpoint_id,
+                "checkpoint": checkpoint.model_dump(mode="json"),
+            },
+        )
+
+    def record_long_running_state(
+        self,
+        state: LongRunningRunState,
+        *,
+        plan_id: str | None,
+        error: JsonObject | None = None,
+    ) -> MemoryRecord:
+        """Record a long-running run state snapshot."""
+        payload: JsonObject = {"state": state.model_dump(mode="json")}
+        if error is not None:
+            payload["error"] = error
+        return self.put(
+            kind=MemoryKind.SESSION,
+            source="long_running_context",
+            task_id=state.task_id,
+            plan_id=plan_id,
+            tags=["long_running_state", state.status],
+            payload=payload,
+        )
+
+    def record_long_running_resource_observation(
+        self,
+        *,
+        task_id: str,
+        attempt_id: str,
+        observation: JsonObject,
+        plan_id: str | None,
+    ) -> MemoryRecord:
+        """Record a long-running resource observation."""
+        return self.put(
+            kind=MemoryKind.SESSION,
+            source="long_running_context",
+            task_id=task_id,
+            plan_id=plan_id,
+            tags=["long_running_resource", attempt_id],
+            payload={"attempt_id": attempt_id, "observation": observation},
         )
 
     def record_tool_call(

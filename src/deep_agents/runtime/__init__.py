@@ -26,6 +26,12 @@ from deep_agents.runtime.events import (
     TaskFailed,
 )
 from deep_agents.runtime.handoffs import HandoffRunner, HandoffStepInput
+from deep_agents.runtime.long_running import (
+    LongRunningCheckpointRecorder,
+    LongRunningContext,
+    LongRunningRunRegistry,
+    current_long_running_context,
+)
 from deep_agents.runtime.memory import InMemoryStore, MemoryRecorder, MemoryStore
 from deep_agents.runtime.observability import ObserverJudge, ProcessJudge, ProgressSignalBus
 from deep_agents.runtime.plan_tracker import PlanTracker
@@ -50,6 +56,9 @@ __all__ = [
     "HandoffStepInput",
     "InMemoryStore",
     "JudgeVerdictReceived",
+    "LongRunningCheckpointRecorder",
+    "LongRunningContext",
+    "LongRunningRunRegistry",
     "MemoryRecorder",
     "MemoryStore",
     "ObserverJudge",
@@ -75,4 +84,5 @@ __all__ = [
     "ToolPolicy",
     "ToolRegistry",
     "build_browser_tool_registry",
+    "current_long_running_context",
 ]
