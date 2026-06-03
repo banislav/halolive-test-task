@@ -5,15 +5,18 @@ from langchain_core.runnables import RunnableLambda
 from deep_agents.models import (
     AgentAssignment,
     AgentKind,
+    AgentProfile,
     DiscoveryPlan,
     ExecutionPlan,
     ExecutionPlannerInput,
     Gate,
     GateDecision,
     GateJudgment,
+    HandoffStep,
     InterruptPriority,
     JudgeRecommendation,
     JudgeVerdict,
+    MemoryKind,
     Milestone,
     Objective,
     ObserverHealth,
@@ -38,8 +41,10 @@ from deep_agents.models import (
     Wave,
 )
 from deep_agents.runtime import (
+    AgentRegistry,
     ContextAssembler,
     Dispatcher,
+    HandoffStepInput,
     InMemoryStore,
     MemoryRecorder,
     ObserverJudge,
@@ -727,6 +732,232 @@ def test_runtime_engine_runs_dependent_tasks_to_completion() -> None:
         "T2": "completed",
     }
     assert list(final_state["results"]) == ["T1", "T2"]
+
+
+def test_runtime_engine_routes_task_to_registered_agent() -> None:
+    def default_worker(_: TaskCard) -> TaskRunResult:
+        raise AssertionError("default worker should not run for registered specialist")
+
+    def specialist_worker(task: TaskCard) -> TaskRunResult:
+        return TaskRunResult(task_id=task.id, output={"agent": "specialist"})
+
+    def judge_task(payload: dict[str, object]) -> JudgeVerdict:
+        result = payload["result"]
+        assert isinstance(result, TaskRunResult)
+        return JudgeVerdict(
+            task_id=result.task_id,
+            verdict="pass",
+            overall_confidence=1.0,
+            recommendation=JudgeRecommendation.ADVANCE,
+        )
+
+    registry = AgentRegistry()
+    registry.register(
+        AgentProfile(
+            id="analysis_worker",
+            name="AnalysisWorker",
+            type=AgentKind.SPECIALIST,
+        ),
+        RunnableLambda(specialist_worker),
+    )
+    assignment = AgentAssignment(
+        type=AgentKind.SPECIALIST,
+        name="AnalysisWorker",
+        agent_id="analysis_worker",
+    )
+    plan = ExecutionPlan(
+        id="EP-specialist",
+        objective="Route to specialist",
+        waves=[Wave(index=0, task_ids=["T1"])],
+        task_cards=[TaskCard(id="T1", name="Analyze", wave=0, assigned_to=assignment)],
+    )
+
+    final_state = RuntimeEngine(
+        worker=RunnableLambda(default_worker),
+        judge=RunnableLambda(judge_task),
+        agent_registry=registry,
+    ).invoke(plan, PlanState(objective=Objective(raw="Route to specialist")))
+
+    assert final_state["results"]["T1"].output == {"agent": "specialist"}
+    assert final_state["plan_state"].status == PlanStatus.COMPLETED
+
+
+def test_runtime_engine_runs_intra_task_handoff_chain() -> None:
+    captured_inputs: list[HandoffStepInput] = []
+
+    def default_worker(_: object) -> TaskRunResult:
+        raise AssertionError("handoff steps should resolve through registry")
+
+    def fill_form(step_input: HandoffStepInput) -> TaskRunResult:
+        captured_inputs.append(step_input)
+        return TaskRunResult(
+            task_id="T1:fill_form",
+            output={"form": "submitted"},
+        )
+
+    def extract_confirmation(step_input: HandoffStepInput) -> TaskRunResult:
+        captured_inputs.append(step_input)
+        assert step_input.previous_output == {"form": "submitted"}
+        assert step_input.shared_state["fill_form"] == {"form": "submitted"}
+        return TaskRunResult(
+            task_id="T1:extract_confirmation",
+            output={"confirmation": "ABC-123"},
+        )
+
+    def judge_task(payload: dict[str, object]) -> JudgeVerdict:
+        result = payload["result"]
+        assert isinstance(result, TaskRunResult)
+        return JudgeVerdict(
+            task_id=result.task_id,
+            verdict="pass",
+            overall_confidence=1.0,
+            recommendation=JudgeRecommendation.ADVANCE,
+        )
+
+    registry = AgentRegistry()
+    registry.register(
+        AgentProfile(id="form_filler", name="FormFiller", type=AgentKind.SPECIALIST),
+        RunnableLambda(fill_form),
+    )
+    registry.register(
+        AgentProfile(id="data_extractor", name="DataExtractor", type=AgentKind.SPECIALIST),
+        RunnableLambda(extract_confirmation),
+    )
+    plan = ExecutionPlan(
+        id="EP-handoff",
+        objective="Complete a browser workflow",
+        waves=[Wave(index=0, task_ids=["T1"], topology="handoffs")],
+        task_cards=[
+            TaskCard(
+                id="T1",
+                name="Submit and extract confirmation",
+                wave=0,
+                assigned_to=AgentAssignment(type=AgentKind.WORKER, name="BrowserWorker"),
+                handoff_chain=[
+                    HandoffStep(
+                        id="fill_form",
+                        name="Fill form",
+                        assigned_to=AgentAssignment(
+                            type=AgentKind.SPECIALIST,
+                            name="FormFiller",
+                            agent_id="form_filler",
+                        ),
+                        instruction="Fill the form fields.",
+                    ),
+                    HandoffStep(
+                        id="extract_confirmation",
+                        name="Extract confirmation",
+                        assigned_to=AgentAssignment(
+                            type=AgentKind.SPECIALIST,
+                            name="DataExtractor",
+                            agent_id="data_extractor",
+                        ),
+                        instruction="Extract the confirmation id.",
+                    ),
+                ],
+            )
+        ],
+    )
+
+    final_state = RuntimeEngine(
+        worker=RunnableLambda(default_worker),
+        judge=RunnableLambda(judge_task),
+        agent_registry=registry,
+        context_assembler=ContextAssembler(),
+    ).invoke(plan, PlanState(objective=Objective(raw="Complete a browser workflow")))
+
+    assert [step_input.step.id for step_input in captured_inputs] == [
+        "fill_form",
+        "extract_confirmation",
+    ]
+    assert final_state["results"]["T1"].output == {"confirmation": "ABC-123"}
+    handoff_records = [
+        record
+        for record in final_state["memory_records"]
+        if "handoff_step_result" in record.tags
+    ]
+    assert [record.kind for record in handoff_records] == [
+        MemoryKind.WORKING,
+        MemoryKind.WORKING,
+    ]
+    assert handoff_records[1].payload["shared_state"]["fill_form"] == {"form": "submitted"}
+
+
+def test_runtime_engine_keeps_inter_task_dependencies_as_context_injection() -> None:
+    captured_inputs: list[TaskExecutionContext] = []
+
+    def research_worker(context: TaskExecutionContext) -> TaskRunResult:
+        assert not isinstance(context, HandoffStepInput)
+        return TaskRunResult(task_id=context.task.id, output={"research": "complete"})
+
+    def analysis_worker(context: TaskExecutionContext) -> TaskRunResult:
+        assert not isinstance(context, HandoffStepInput)
+        captured_inputs.append(context)
+        return TaskRunResult(
+            task_id=context.task.id,
+            output={"dependency": context.dependency_results["T1"].output},
+        )
+
+    def judge_task(payload: dict[str, object]) -> JudgeVerdict:
+        result = payload["result"]
+        assert isinstance(result, TaskRunResult)
+        return JudgeVerdict(
+            task_id=result.task_id,
+            verdict="pass",
+            overall_confidence=1.0,
+            recommendation=JudgeRecommendation.ADVANCE,
+        )
+
+    registry = AgentRegistry()
+    registry.register(
+        AgentProfile(id="research_worker", name="ResearchWorker", type=AgentKind.WORKER),
+        RunnableLambda(research_worker),
+    )
+    registry.register(
+        AgentProfile(id="analysis_worker", name="AnalysisWorker", type=AgentKind.SPECIALIST),
+        RunnableLambda(analysis_worker),
+    )
+    plan = ExecutionPlan(
+        id="EP-context-injection",
+        objective="Use dependency context",
+        waves=[Wave(index=0, task_ids=["T1"]), Wave(index=1, task_ids=["T2"])],
+        task_cards=[
+            TaskCard(
+                id="T1",
+                name="Research",
+                wave=0,
+                assigned_to=AgentAssignment(
+                    type=AgentKind.WORKER,
+                    name="ResearchWorker",
+                    agent_id="research_worker",
+                ),
+            ),
+            TaskCard(
+                id="T2",
+                name="Analyze",
+                wave=1,
+                blocked_by=["T1"],
+                assigned_to=AgentAssignment(
+                    type=AgentKind.SPECIALIST,
+                    name="AnalysisWorker",
+                    agent_id="analysis_worker",
+                ),
+            ),
+        ],
+    )
+
+    final_state = RuntimeEngine(
+        worker=RunnableLambda(lambda _: TaskRunResult(task_id="fallback")),
+        judge=RunnableLambda(judge_task),
+        agent_registry=registry,
+        context_assembler=ContextAssembler(),
+    ).invoke(plan, PlanState(objective=Objective(raw="Use dependency context")))
+
+    assert captured_inputs[0].dependency_results["T1"].output == {"research": "complete"}
+    assert final_state["results"]["T2"].output == {"dependency": {"research": "complete"}}
+    assert not any(
+        "handoff_step_result" in record.tags for record in final_state["memory_records"]
+    )
 
 
 def test_runtime_engine_replans_after_task_judge_recommendation() -> None:
