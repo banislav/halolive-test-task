@@ -23,12 +23,17 @@ INITIAL_PLANNER_SYSTEM_PROMPT = """You are InitialPlannerAgent.
 Transform a raw user objective into a DiscoveryPlan.
 Return only valid JSON matching the DiscoveryPlan schema.
 Include objective, clarifications, milestones, gates, capability_map, skill_assignments,
-risk_register, and dependency_graph."""
+risk_register, and dependency_graph.
+Use the exact schema field names. Do not use title, description, risk, mitigation, or
+other alternate field names unless they are part of the schema."""
 
 EXECUTION_PLANNER_SYSTEM_PROMPT = """You are ExecutionPlannerAgent.
 Convert a DiscoveryPlan into a dispatchable ExecutionPlan.
 Return only valid JSON matching the ExecutionPlan schema.
 Include waves, task_cards, dependency_graph, and data_flow.
+Use the exact schema field names. Do not use wave id fields, task description,
+task tools, task skills, or alternate dependency graph shapes unless they are part
+of the schema.
 Select a topology per wave using one of: subagents, handoffs, router, skills,
 custom_workflow.
 Use subagents for independent task invocations with clean context isolation.
@@ -103,9 +108,29 @@ def build_initial_planner_messages(planner_input: PlannerInput) -> list[BaseMess
                     planner_input.model_dump_json(indent=2),
                     "Expected JSON top-level shape:",
                     (
-                        '{"objective": {}, "clarifications": [], "milestones": [], '
-                        '"gates": [], "capability_map": {}, "skill_assignments": {}, '
-                        '"risk_register": [], "dependency_graph": {}}'
+                        '{"objective": {"raw": "...", "normalized": null, '
+                        '"constraints": [], "success_criteria": []}, '
+                        '"clarifications": [{"question": "...", "resolution": null}], '
+                        '"milestones": [{"id": "M1", "name": "...", "gates": [], '
+                        '"tasks": [{"id": "T1", "name": "...", "description": null, '
+                        '"acceptance_criteria": [{"description": "...", '
+                        '"measurable": true}], "tools_needed": [], '
+                        '"skills_needed": [], "estimated_complexity": "medium", '
+                        '"risks": [], "blocked_by": [], "status": "pending"}]}], '
+                        '"gates": [{"id": "G1", "type": "quality_gate", '
+                        '"condition": "...", "action_on_fail": "replan"}], '
+                        '"capability_map": {"T1": ["tool_id"]}, '
+                        '"skill_assignments": {"T1": ["skill_id"]}, '
+                        '"risk_register": [{"description": "...", '
+                        '"fallback": null, "severity": "medium"}], '
+                        '"dependency_graph": {"T1": []}}'
+                    ),
+                    "Important schema constraints:",
+                    (
+                        "Milestones use name, not title. Gates use condition, not description. "
+                        "Risks use description and fallback, not risk and mitigation. "
+                        "capability_map, skill_assignments, and dependency_graph values must "
+                        "always be arrays of strings."
                     ),
                 ]
             )
@@ -130,13 +155,34 @@ def build_execution_planner_messages(planner_input: ExecutionPlannerInput) -> li
                     planner_input.model_dump_json(indent=2),
                     "Expected JSON top-level shape:",
                     (
-                        '{"id": "...", "objective": "...", "waves": [], '
-                        '"task_cards": [], "dependency_graph": {}, "data_flow": {}}'
+                        '{"id": "...", "objective": "...", '
+                        '"waves": [{"index": 0, "name": "...", "blocked_by": [], '
+                        '"task_ids": ["T1"], "topology": "subagents"}], '
+                        '"task_cards": [{"id": "T1", "name": "...", "wave": 0, '
+                        '"blocked_by": [], "blocks": [], '
+                        '"assigned_to": {"type": "worker", "name": "Worker", '
+                        '"agent_id": null, "skills": [{"id": "skill_id"}]}, '
+                        '"invocation": {"method": "async_dispatch", "input": {}, '
+                        '"input_schema": {}, "expected_output_schema": {}, '
+                        '"timeout_seconds": 120}, '
+                        '"acceptance_criteria": [{"description": "...", '
+                        '"measurable": true}], "estimated_complexity": "medium", '
+                        '"risks": [], "handoff_chain": []}], '
+                        '"dependency_graph": {"blocked_by": {"T1": []}, '
+                        '"blocks": {"T1": []}}, "data_flow": {"T1": []}}'
                     ),
                     "Topology rules:",
                     (
                         "Wave.topology defaults to subagents. Add TaskCard.handoff_chain only "
                         "for intra-task handoffs. Inter-task dependencies are not handoffs."
+                    ),
+                    "Important schema constraints:",
+                    (
+                        "Waves use numeric index, not id. Task cards use wave and assigned_to. "
+                        "Put skills under assigned_to.skills, not task.skills. Put tool inputs "
+                        "under invocation.input or invocation.input_schema, not task.tools. "
+                        "dependency_graph must contain blocked_by and blocks maps. data_flow "
+                        "values must be arrays of strings."
                     ),
                 ]
             )
