@@ -4,6 +4,7 @@ from langchain_core.messages import BaseMessage
 from langchain_core.runnables import RunnableLambda
 
 from deep_agents.langchain import (
+    build_discovery_plan_builder,
     build_execution_planner,
     build_execution_planner_messages,
     build_initial_planner,
@@ -127,6 +128,98 @@ def test_initial_planner_factory_uses_discovery_plan_structured_output() -> None
 
     planner = build_initial_planner(model=model)  # type: ignore[arg-type]
     result = planner.invoke(PlannerInput(objective="Research deep agents"))
+
+    assert model.requested_schema is DiscoveryPlan
+    assert result.objective.raw == "Research deep agents"
+
+
+def test_discovery_plan_builder_converts_raw_prompt_with_defaults() -> None:
+    captured_inputs: list[PlannerInput] = []
+    discovery_plan = build_discovery_plan()
+
+    def run_initial(planner_input: PlannerInput) -> DiscoveryPlan:
+        captured_inputs.append(planner_input)
+        return discovery_plan
+
+    builder = build_discovery_plan_builder(
+        RunnableLambda(run_initial),
+        constraints=["Use recent sources"],
+        available_tools=["web_search"],
+        available_skills=["academic_research"],
+        context={"audience": "engineers"},
+    )
+
+    result = builder.invoke("Research deep agents")
+
+    assert result is discovery_plan
+    assert captured_inputs[0] == PlannerInput(
+        objective="Research deep agents",
+        constraints=["Use recent sources"],
+        available_tools=["web_search"],
+        available_skills=["academic_research"],
+        context={"audience": "engineers"},
+    )
+
+
+def test_discovery_plan_builder_preserves_planner_input() -> None:
+    captured_inputs: list[PlannerInput] = []
+    discovery_plan = build_discovery_plan()
+
+    def run_initial(planner_input: PlannerInput) -> DiscoveryPlan:
+        captured_inputs.append(planner_input)
+        return discovery_plan
+
+    planner_input = PlannerInput(
+        objective="Research deep agents",
+        constraints=["Use local defaults only if raw string"],
+        available_tools=["custom_tool"],
+        available_skills=["custom_skill"],
+        context={"source": "caller"},
+    )
+    builder = build_discovery_plan_builder(
+        RunnableLambda(run_initial),
+        constraints=["ignored"],
+        available_tools=["ignored"],
+        available_skills=["ignored"],
+        context={"ignored": True},
+    )
+
+    builder.invoke(planner_input)
+
+    assert captured_inputs[0] is planner_input
+
+
+def test_discovery_plan_builder_coerces_dict_input() -> None:
+    captured_inputs: list[PlannerInput] = []
+
+    def run_initial(planner_input: PlannerInput) -> DiscoveryPlan:
+        captured_inputs.append(planner_input)
+        return build_discovery_plan()
+
+    builder = build_discovery_plan_builder(RunnableLambda(run_initial))
+
+    builder.invoke(
+        {
+            "objective": "Research deep agents",
+            "constraints": ["Use credible sources"],
+            "available_tools": ["web_search"],
+            "available_skills": ["academic_research"],
+            "context": {"audience": "engineers"},
+        }
+    )
+
+    assert captured_inputs[0].objective == "Research deep agents"
+    assert captured_inputs[0].constraints == ["Use credible sources"]
+    assert captured_inputs[0].available_tools == ["web_search"]
+    assert captured_inputs[0].available_skills == ["academic_research"]
+    assert captured_inputs[0].context == {"audience": "engineers"}
+
+
+def test_discovery_plan_builder_uses_initial_planner_structured_output() -> None:
+    model = StubStructuredChatModel(build_discovery_plan())
+
+    builder = build_discovery_plan_builder(model=model)  # type: ignore[arg-type]
+    result = builder.invoke("Research deep agents")
 
     assert model.requested_schema is DiscoveryPlan
     assert result.objective.raw == "Research deep agents"

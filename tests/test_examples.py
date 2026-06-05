@@ -17,6 +17,18 @@ def test_async_runtime_session_example_builds_two_task_plan() -> None:
     assert plan.task_cards[1].blocked_by == ["T1"]
 
 
+def test_prompt_to_async_runtime_example_builds_prompt_input_defaults() -> None:
+    module = _load_example("run_prompt_to_async_runtime")
+
+    planner_input = module.build_prompt_input()
+
+    assert planner_input.objective == module.RAW_PROMPT
+    assert planner_input.constraints == module.DEFAULT_CONSTRAINTS
+    assert planner_input.available_tools == module.DEFAULT_TOOLS
+    assert planner_input.available_skills == module.DEFAULT_SKILLS
+    assert planner_input.context == module.DEFAULT_CONTEXT
+
+
 def _load_example(name: str) -> ModuleType:
     path = Path(__file__).resolve().parents[1] / "examples" / f"{name}.py"
     spec = importlib.util.spec_from_file_location(name, path)

@@ -109,6 +109,58 @@ def test_discovery_plan_matches_architecture_artifacts() -> None:
     assert plan.milestones[0].tasks[0].risks[0].fallback == "Use cached/archive versions"
 
 
+def test_discovery_plan_accepts_common_llm_aliases() -> None:
+    plan = DiscoveryPlan(
+        objective={
+            "title": "Async Deep-Agent Runtime Engineering Summary",
+            "description": "Produce a concise implementation-focused summary.",
+        },
+        clarifications=["What target runtime should be highlighted?"],
+        milestones=[
+            {
+                "id": "M1",
+                "title": "Architecture & Flow Mapping",
+                "description": "Map the lifecycle from prompt to async execution.",
+            }
+        ],
+        gates=[
+            {
+                "id": "G1",
+                "description": "Verify explicit mention of async runtime execution.",
+            }
+        ],
+        capability_map={
+            "progress_signal_bus": "Streams runtime progress to observers.",
+        },
+        skill_assignments={
+            "technical_writing": "Responsible for concise engineering prose.",
+        },
+        risk_register=[
+            {
+                "id": "R1",
+                "risk": "Overly abstract language",
+                "mitigation": "Require concrete runtime terms.",
+            }
+        ],
+        dependency_graph={"T1": "T0"},
+    )
+
+    assert plan.objective.raw == "Produce a concise implementation-focused summary."
+    assert plan.objective.normalized == "Async Deep-Agent Runtime Engineering Summary"
+    assert plan.clarifications[0].question == "What target runtime should be highlighted?"
+    assert plan.milestones[0].name == "Architecture & Flow Mapping"
+    assert plan.gates[0].condition == "Verify explicit mention of async runtime execution."
+    assert plan.capability_map["progress_signal_bus"] == [
+        "Streams runtime progress to observers."
+    ]
+    assert plan.skill_assignments["technical_writing"] == [
+        "Responsible for concise engineering prose."
+    ]
+    assert plan.risk_register[0].description == "Overly abstract language"
+    assert plan.risk_register[0].fallback == "Require concrete runtime terms."
+    assert plan.dependency_graph["T1"] == ["T0"]
+
+
 def test_planner_input_models_hold_structured_context() -> None:
     discovery = DiscoveryPlan(objective=Objective(raw="Research a topic"))
     planner_input = PlannerInput(
@@ -158,6 +210,72 @@ def test_execution_plan_validates_wave_task_references() -> None:
     )
 
     assert plan.task_cards[0].assigned_to.name == "ResearchWorker"
+
+
+def test_execution_plan_accepts_common_llm_aliases() -> None:
+    plan = ExecutionPlan(
+        id="EP-generated",
+        objective="Summarize the async runtime",
+        waves=[
+            {
+                "id": "W1",
+                "name": "Summary work",
+                "task_ids": ["TC1", "TC2", "TC3"],
+            }
+        ],
+        task_cards=[
+            {
+                "id": "TC1",
+                "name": "Outline summary",
+                "description": "Create a structured outline.",
+                "tools": ["progress_signal_bus"],
+                "skills": ["technical_writing"],
+                "handoff_chain": None,
+            },
+            {
+                "id": "TC2",
+                "name": "Draft summary",
+                "description": "Generate the draft summary.",
+                "tools": ["prompt_queue"],
+                "skills": ["technical_writing"],
+                "handoff_chain": None,
+            },
+            {
+                "id": "TC3",
+                "name": "Review summary",
+                "description": "Review and refine the draft.",
+                "tools": [],
+                "skills": ["technical_writing"],
+                "handoff_chain": None,
+            },
+        ],
+        dependency_graph={"TC1": [], "TC2": ["TC1"], "TC3": ["TC2"]},
+        data_flow={
+            "TC1": {"consumes": [], "produces": ["outline_artifact"]},
+            "TC2": {"consumes": ["outline_artifact"], "produces": ["draft_artifact"]},
+            "TC3": {
+                "consumes": ["draft_artifact"],
+                "produces": ["final_summary_artifact"],
+            },
+        },
+    )
+
+    assert plan.waves[0].index == 0
+    assert [task.wave for task in plan.task_cards] == [0, 0, 0]
+    assert plan.task_cards[0].assigned_to.name == "Worker"
+    assert plan.task_cards[0].assigned_to.skills[0].id == "technical_writing"
+    assert plan.task_cards[0].invocation.input == {
+        "description": "Create a structured outline.",
+        "tools": ["progress_signal_bus"],
+    }
+    assert plan.task_cards[1].blocked_by == ["TC1"]
+    assert plan.task_cards[2].handoff_chain == []
+    assert plan.dependency_graph.blocked_by == {
+        "TC1": [],
+        "TC2": ["TC1"],
+        "TC3": ["TC2"],
+    }
+    assert plan.data_flow["TC3"] == ["draft_artifact", "final_summary_artifact"]
 
 
 def test_task_card_matches_architecture_schema() -> None:

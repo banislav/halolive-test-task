@@ -26,6 +26,32 @@ def build_initial_planner(
     ) | structured_model | RunnableLambda(_coerce_discovery_plan)
 
 
+def build_discovery_plan_builder(
+    initial_planner: Runnable[PlannerInput, DiscoveryPlan] | None = None,
+    *,
+    model: BaseChatModel | None = None,
+    settings: DeepAgentsSettings | None = None,
+    constraints: list[str] | None = None,
+    available_tools: list[str] | None = None,
+    available_skills: list[str] | None = None,
+    context: dict[str, Any] | None = None,
+) -> Runnable[str | PlannerInput | dict[str, Any], DiscoveryPlan]:
+    """Build a convenience runnable from raw prompt text to a discovery plan."""
+    planner = initial_planner or build_initial_planner(model=model, settings=settings)
+
+    def run(value: str | PlannerInput | dict[str, Any]) -> DiscoveryPlan:
+        planner_input = _coerce_discovery_builder_input(
+            value,
+            constraints=constraints,
+            available_tools=available_tools,
+            available_skills=available_skills,
+            context=context,
+        )
+        return planner.invoke(planner_input)
+
+    return RunnableLambda(run)
+
+
 def build_execution_planner(
     model: BaseChatModel | None = None,
     settings: DeepAgentsSettings | None = None,
@@ -67,6 +93,25 @@ def _coerce_planner_input(value: PlannerInput | dict[str, Any]) -> PlannerInput:
     if isinstance(value, PlannerInput):
         return value
     return PlannerInput(**value)
+
+
+def _coerce_discovery_builder_input(
+    value: str | PlannerInput | dict[str, Any],
+    *,
+    constraints: list[str] | None,
+    available_tools: list[str] | None,
+    available_skills: list[str] | None,
+    context: dict[str, Any] | None,
+) -> PlannerInput:
+    if isinstance(value, str):
+        return PlannerInput(
+            objective=value,
+            constraints=list(constraints or []),
+            available_tools=list(available_tools or []),
+            available_skills=list(available_skills or []),
+            context=dict(context or {}),
+        )
+    return _coerce_planner_input(value)
 
 
 def _coerce_execution_planner_input(
