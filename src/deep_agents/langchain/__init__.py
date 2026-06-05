@@ -2,6 +2,7 @@
 
 from deep_agents.langchain.judges import build_checkpoint_judge, build_task_completion_judge
 from deep_agents.langchain.planners import (
+    build_discovery_plan_builder,
     build_execution_planner,
     build_initial_planner,
     build_planning_pipeline,
@@ -22,6 +23,7 @@ from deep_agents.langchain.prompts import (
 from deep_agents.langchain.workers import build_task_worker
 
 __all__ = [
+    "build_discovery_plan_builder",
     "build_execution_planner",
     "build_execution_planner_messages",
     "build_checkpoint_judge",
