@@ -1,0 +1,11 @@
+.git
+.codex
+.env
+.pytest_cache
+.ruff_cache
+.vscode
+__pycache__/
+*.py[cod]
+apps/web/dist
+apps/web/node_modules
+node_modules
