@@ -1,0 +1,48 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    env_file:
+      - .env
+    environment:
+      DEEP_AGENTS_PROVIDER: openrouter
+      DEEP_AGENTS_MODEL: qwen/qwen3.6-flash
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+      - pip-cache:/root/.cache/pip
+    command:
+      - uvicorn
+      - deep_agents.server.app:create_app
+      - --factory
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+
+  frontend:
+    build:
+      context: ./apps/web
+    environment:
+      VITE_API_BASE: http://localhost:8000
+      VITE_MOCK_MODE: "false"
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./apps/web:/app
+      - web-node-modules:/app/node_modules
+    depends_on:
+      - backend
+    command:
+      - npm
+      - run
+      - dev
+      - --
+      - --host
+      - 0.0.0.0
+
+volumes:
+  pip-cache:
+  web-node-modules:

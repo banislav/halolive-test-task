@@ -4,8 +4,8 @@ const CONFIG_KEY = 'deep_agents_web_config';
 const THEME_KEY = 'deep_agents_web_theme';
 
 export const DEFAULT_CONFIG = {
-  apiBase: 'http://localhost:8000',
-  mockMode: true,
+  apiBase: import.meta.env.VITE_API_BASE || 'http://localhost:8000',
+  mockMode: parseBoolean(import.meta.env.VITE_MOCK_MODE, true),
 };
 
 const AppConfigContext = createContext(null);
@@ -50,4 +50,9 @@ function readJson(key, fallback) {
   } catch {
     return fallback;
   }
+}
+
+function parseBoolean(value, fallback) {
+  if (value == null || value === '') return fallback;
+  return String(value).toLowerCase() === 'true';
 }
