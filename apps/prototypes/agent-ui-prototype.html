@@ -1,0 +1,1213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Agent Prompt Runner</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
+
+    :root {
+      --sans: "Plus Jakarta Sans", system-ui, -apple-system, sans-serif;
+      --mono: "JetBrains Mono", "Cascadia Code", ui-monospace, monospace;
+      --bg: #F5F5F7;
+      --card: #FFFFFF;
+      --subtle: #EFEFEF;
+      --code-bg: #EBEBED;
+      --text: #111113;
+      --muted: #66666E;
+      --faint: #A0A0A8;
+      --border: #E1E1E5;
+      --accent: oklch(0.54 0.22 268);
+      --accent-hover: oklch(0.47 0.22 268);
+      --accent-fg: #fff;
+      --accent-subtle: oklch(0.96 0.04 268);
+      --accent-text: oklch(0.48 0.22 268);
+      --green: oklch(0.52 0.17 162);
+      --green-subtle: oklch(0.96 0.04 162);
+      --r-sm: 8px;
+      --r: 12px;
+      --r-lg: 16px;
+      --sh: 0 1px 3px rgba(0,0,0,0.07), 0 1px 2px rgba(0,0,0,0.04);
+      --sh-md: 0 4px 12px rgba(0,0,0,0.07), 0 2px 4px rgba(0,0,0,0.04);
+    }
+    [data-theme="dark"] {
+      --bg: #0D0D0F;
+      --card: #17171A;
+      --subtle: #1F1F23;
+      --code-bg: #111113;
+      --text: #EBEBED;
+      --muted: #A0A0A8;
+      --faint: #606068;
+      --border: #2C2C30;
+      --accent: oklch(0.72 0.2 268);
+      --accent-hover: oklch(0.78 0.2 268);
+      --accent-subtle: oklch(0.2 0.08 268);
+      --accent-text: oklch(0.75 0.2 268);
+      --green: oklch(0.68 0.17 162);
+      --green-subtle: oklch(0.2 0.06 162);
+      --sh: 0 1px 3px rgba(0,0,0,0.4), 0 1px 2px rgba(0,0,0,0.3);
+      --sh-md: 0 4px 12px rgba(0,0,0,0.5), 0 2px 4px rgba(0,0,0,0.35);
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; }
+    body {
+      font-family: var(--sans);
+      background: var(--bg);
+      color: var(--text);
+      font-size: 14px;
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* ── Topbar ── */
+    .topbar {
+      position: sticky; top: 0; z-index: 50;
+      background: color-mix(in srgb, var(--card) 85%, transparent);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+      height: 56px; padding: 0 24px;
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .topbar-brand { display: flex; align-items: center; gap: 10px; }
+    .topbar-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex-shrink: 0; }
+    .topbar-title { font-weight: 700; font-size: 15px; color: var(--text); letter-spacing: -0.01em; }
+    .badge-mock {
+      font-size: 10px; font-weight: 700; letter-spacing: 0.06em;
+      padding: 2px 7px; border-radius: 4px;
+      background: oklch(0.93 0.06 85); color: oklch(0.42 0.14 70);
+      font-family: var(--mono);
+    }
+    [data-theme="dark"] .badge-mock { background: oklch(0.3 0.1 70); color: oklch(0.8 0.15 80); }
+    .topbar-actions { display: flex; align-items: center; gap: 6px; }
+
+    /* ── Layout ── */
+    .main { max-width: 900px; margin: 0 auto; padding: 32px 24px 80px; }
+
+    /* ── Buttons ── */
+    .btn {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 8px 16px; border-radius: var(--r-sm);
+      font-size: 14px; font-weight: 500; font-family: var(--sans);
+      cursor: pointer; border: none; outline: none;
+      transition: all 0.15s ease; white-space: nowrap;
+    }
+    .btn:disabled { opacity: 0.55; cursor: not-allowed; pointer-events: none; }
+    .btn-primary { background: var(--accent); color: var(--accent-fg); }
+    .btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
+    .btn-ghost {
+      background: transparent; color: var(--muted);
+      border: 1px solid transparent;
+    }
+    .btn-ghost:hover { background: var(--subtle); color: var(--text); border-color: var(--border); }
+    .btn-icon {
+      display: inline-flex; align-items: center; gap: 5px;
+      padding: 6px 10px; border-radius: var(--r-sm);
+      background: transparent; border: 1px solid var(--border);
+      color: var(--muted); font-size: 12px; font-weight: 500; font-family: var(--sans);
+      cursor: pointer; transition: all 0.15s ease;
+    }
+    .btn-icon:hover { background: var(--subtle); color: var(--text); }
+    .btn-icon.is-copied { color: var(--green); border-color: var(--green); }
+
+    /* ── Segmented toggle ── */
+    .seg { display: inline-flex; background: var(--subtle); border-radius: 7px; padding: 3px; gap: 2px; }
+    .seg-btn {
+      display: inline-flex; align-items: center; gap: 5px;
+      padding: 5px 10px; border-radius: 5px;
+      font-size: 12px; font-weight: 500; font-family: var(--sans);
+      cursor: pointer; border: none; background: transparent; color: var(--muted);
+      transition: all 0.15s ease;
+    }
+    .seg-btn.active { background: var(--card); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,0.1); }
+
+    /* ── Card ── */
+    .card { background: var(--card); border: 1px solid var(--border); border-radius: var(--r); box-shadow: var(--sh); }
+
+    /* ── Prompt area ── */
+    .prompt-card { overflow: hidden; }
+    .prompt-label { padding: 14px 16px 0; font-size: 11px; font-weight: 600; color: var(--faint); text-transform: uppercase; letter-spacing: 0.06em; }
+    .prompt-textarea {
+      width: 100%; min-height: 100px; max-height: 300px;
+      padding: 10px 16px 14px;
+      background: transparent; border: none; outline: none; resize: none;
+      font-family: var(--sans); font-size: 15px; line-height: 1.65; color: var(--text);
+      field-sizing: content;
+    }
+    .prompt-textarea::placeholder { color: var(--faint); }
+    .prompt-footer {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 10px 14px; border-top: 1px solid var(--border);
+      gap: 8px;
+    }
+    .char-count { font-size: 11px; color: var(--faint); font-family: var(--mono); }
+
+    /* ── History ── */
+    .history-wrap { margin-top: 10px; }
+    .history-toggle {
+      display: inline-flex; align-items: center; gap: 7px;
+      padding: 6px 0; font-size: 13px; font-weight: 500; color: var(--muted);
+      background: none; border: none; cursor: pointer; font-family: var(--sans);
+      transition: color 0.15s;
+    }
+    .history-toggle:hover { color: var(--text); }
+    .history-list { display: flex; flex-direction: column; gap: 5px; margin-top: 8px; }
+    .history-item {
+      display: flex; align-items: center; gap: 10px;
+      padding: 9px 13px; background: var(--card);
+      border: 1px solid var(--border); border-radius: var(--r-sm);
+      cursor: pointer; transition: all 0.15s;
+    }
+    .history-item:hover { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-subtle); }
+    .history-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--border); flex-shrink: 0; }
+    .history-text { font-size: 13px; color: var(--text); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .history-meta { font-size: 11px; color: var(--faint); white-space: nowrap; font-family: var(--mono); }
+    .history-clear { font-size: 11px; color: var(--faint); background: none; border: none; cursor: pointer; font-family: var(--sans); padding: 4px 0; }
+    .history-clear:hover { color: var(--text); }
+
+    /* ── Divider ── */
+    .section-divider {
+      display: flex; align-items: center; gap: 12px; margin: 28px 0 24px;
+    }
+    .section-divider::before, .section-divider::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+    .section-divider-label { font-size: 11px; color: var(--faint); font-weight: 600; text-transform: uppercase; letter-spacing: 0.07em; white-space: nowrap; }
+
+    /* ── Summary card ── */
+    .summary-card { padding: 18px 20px; }
+    .summary-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; gap: 12px; flex-wrap: wrap; }
+    .summary-id { font-family: var(--mono); font-size: 11px; color: var(--faint); }
+    .summary-answer { font-size: 15px; line-height: 1.65; color: var(--text); min-height: 1.65em; }
+    .cursor-blink::after { content: '▋'; font-size: 12px; color: var(--accent); animation: blink 0.85s steps(1) infinite; margin-left: 1px; }
+    @keyframes blink { 0%,49% { opacity: 1; } 50%,100% { opacity: 0; } }
+    .ref-ids { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 12px; }
+    .ref-label { font-size: 11px; color: var(--faint); }
+    .chip {
+      font-family: var(--mono); font-size: 11px; font-weight: 500;
+      padding: 2px 8px; background: var(--accent-subtle); color: var(--accent-text);
+      border-radius: 4px;
+    }
+    .chip.green { background: var(--green-subtle); color: var(--green); }
+
+    /* ── Task grid ── */
+    .tasks-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; flex-wrap: wrap; gap: 10px; }
+    .tasks-title { font-size: 13px; font-weight: 600; color: var(--muted); }
+    .tasks-actions { display: flex; align-items: center; gap: 8px; }
+    .task-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); gap: 14px; }
+
+    /* ── Task card ── */
+    .task-card { padding: 18px 20px; }
+    @keyframes fadeUp { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+    .task-card-animate { animation: fadeUp 0.3s ease both; }
+    .task-card-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
+    .task-card-left { display: flex; align-items: flex-start; gap: 8px; min-width: 0; }
+    .task-id-chip { font-family: var(--mono); font-size: 11px; font-weight: 500; padding: 2px 7px; background: var(--accent-subtle); color: var(--accent-text); border-radius: 4px; flex-shrink: 0; margin-top: 1px; }
+    .task-section { font-size: 14px; font-weight: 600; color: var(--text); line-height: 1.3; }
+    .task-content { max-height: 260px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+    .task-content::-webkit-scrollbar { width: 4px; }
+    .task-content::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+    /* Readable prose */
+    .readable p { font-size: 13px; line-height: 1.7; color: var(--muted); margin-bottom: 8px; }
+    .readable p:last-child { margin-bottom: 0; }
+    .readable .md-h { font-size: 12px; font-weight: 700; color: var(--text); text-transform: uppercase; letter-spacing: 0.04em; margin-top: 12px; margin-bottom: 3px; }
+    .readable ul { padding-left: 16px; margin-bottom: 8px; }
+    .readable li { font-size: 13px; line-height: 1.65; color: var(--muted); margin-bottom: 3px; }
+    .readable code { font-family: var(--mono); font-size: 11.5px; padding: 1px 5px; background: var(--code-bg); border-radius: 3px; color: var(--accent-text); }
+
+    /* JSON view */
+    .json-view {
+      font-family: var(--mono); font-size: 12px; line-height: 1.55;
+      background: var(--code-bg); padding: 12px 14px;
+      border-radius: var(--r-sm); overflow-x: auto;
+      white-space: pre; word-break: normal;
+    }
+    .jk { color: var(--muted); }
+    .js { color: var(--green); }
+    .ji { color: oklch(0.55 0.2 235); }
+    .jb { color: oklch(0.55 0.2 45); }
+    .jn { color: oklch(0.55 0.18 30); }
+    [data-theme="dark"] .ji { color: oklch(0.72 0.18 235); }
+    [data-theme="dark"] .jb { color: oklch(0.75 0.18 45); }
+    [data-theme="dark"] .jn { color: oklch(0.7 0.18 30); }
+
+    /* ── Skeleton ── */
+    @keyframes shimmer { 0% { background-position: -200% 0; } 100% { background-position: 200% 0; } }
+    .skel {
+      display: block; margin-bottom: 7px;
+      background: linear-gradient(90deg, var(--subtle) 25%, var(--border) 50%, var(--subtle) 75%);
+      background-size: 200% 100%;
+      animation: shimmer 1.8s ease-in-out infinite;
+    }
+
+    /* ── Error ── */
+    .error-card { padding: 14px 18px; border-color: oklch(0.7 0.18 30); background: oklch(0.98 0.02 30); }
+    [data-theme="dark"] .error-card { background: oklch(0.18 0.05 30); border-color: oklch(0.5 0.18 30); }
+    .error-text { font-size: 13px; color: oklch(0.5 0.2 30); }
+    [data-theme="dark"] .error-text { color: oklch(0.75 0.18 30); }
+
+    /* ── Settings panel ── */
+    .overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.25); z-index: 99; opacity: 0; pointer-events: none; transition: opacity 0.25s; }
+    .overlay.open { opacity: 1; pointer-events: auto; }
+    .settings-panel {
+      position: fixed; top: 0; right: 0; height: 100vh; width: 340px;
+      background: var(--card); border-left: 1px solid var(--border);
+      z-index: 100; transform: translateX(100%); transition: transform 0.25s cubic-bezier(0.4,0,0.2,1);
+      display: flex; flex-direction: column; overflow: hidden;
+    }
+    .settings-panel.open { transform: translateX(0); }
+    .settings-head { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; border-bottom: 1px solid var(--border); }
+    .settings-title { font-size: 15px; font-weight: 700; }
+    .settings-body { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 18px; }
+    .field { display: flex; flex-direction: column; gap: 5px; }
+    .field label { font-size: 11px; font-weight: 700; color: var(--faint); text-transform: uppercase; letter-spacing: 0.06em; }
+    .field input {
+      padding: 8px 11px; background: var(--subtle); border: 1px solid var(--border);
+      border-radius: var(--r-sm); font-size: 12px; font-family: var(--mono); color: var(--text);
+      outline: none; transition: border-color 0.15s;
+    }
+    .field input:focus { border-color: var(--accent); }
+    .field-hint { font-size: 11px; color: var(--faint); line-height: 1.5; }
+    .field-sep { height: 1px; background: var(--border); margin: 2px 0; }
+    .mock-row {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 12px 14px; background: var(--subtle); border-radius: var(--r-sm);
+    }
+    .mock-label { font-size: 13px; font-weight: 600; }
+    .mock-desc { font-size: 11px; color: var(--faint); margin-top: 1px; }
+    .switch-btn {
+      width: 38px; height: 22px; border-radius: 11px;
+      background: var(--border); cursor: pointer; border: none;
+      position: relative; transition: background 0.2s; flex-shrink: 0;
+    }
+    .switch-btn.on { background: var(--accent); }
+    .switch-btn::after {
+      content: ''; position: absolute; top: 3px; left: 3px;
+      width: 16px; height: 16px; border-radius: 50%; background: white;
+      transition: transform 0.2s; box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+    }
+    .switch-btn.on::after { transform: translateX(16px); }
+
+    /* ── Spinner ── */
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .spin { animation: spin 0.75s linear infinite; }
+
+    /* ── Misc ── */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+    button { cursor: pointer; }
+    a { color: inherit; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+
+// ─── agent-ui/shared.jsx ─────────────────────────────────────────────
+// ─── React hooks ───────────────────────────────────────────────────────────
+const { useState, useEffect, useContext, createContext, useCallback, useRef } = React;
+
+// ─── Theme ─────────────────────────────────────────────────────────────────
+const ThemeCtx = createContext({ theme: 'light', toggle: () => {} });
+
+function ThemeProvider({ children }) {
+  const [theme, setTheme] = useState(() => localStorage.getItem('agui_theme') || 'light');
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+    localStorage.setItem('agui_theme', theme);
+  }, [theme]);
+  const toggle = useCallback(() => setTheme(t => t === 'light' ? 'dark' : 'light'), []);
+  return <ThemeCtx.Provider value={{ theme, toggle }}>{children}</ThemeCtx.Provider>;
+}
+const useTheme = () => useContext(ThemeCtx);
+
+// ─── Streaming text hook ────────────────────────────────────────────────────
+function useStreamText(text, active, key) {
+  const [shown, setShown] = useState('');
+  const [done, setDone] = useState(false);
+  useEffect(() => {
+    if (!active || !text) { setShown(text || ''); setDone(true); return; }
+    setShown(''); setDone(false);
+    const ms = Math.max(6, Math.min(22, 4000 / text.length));
+    let i = 0;
+    const id = setInterval(() => {
+      i++;
+      setShown(text.slice(0, i));
+      if (i >= text.length) { setDone(true); clearInterval(id); }
+    }, ms);
+    return () => clearInterval(id);
+  }, [text, active, key]);
+  return { shown, done };
+}
+
+// ─── JSON syntax highlight ──────────────────────────────────────────────────
+function hlJSON(obj) {
+  const s = typeof obj === 'string' ? obj : JSON.stringify(obj, null, 2);
+  return s
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(
+      /("(?:\\.|[^"\\])*"(?:\s*:)?|\b(?:true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+-]?\d+)?)/g,
+      m => {
+        if (/^".*"\s*:$/.test(m.trim())) return `<span class="jk">${m}</span>`;
+        if (/^"/.test(m)) return `<span class="js">${m}</span>`;
+        if (/true|false/.test(m)) return `<span class="jb">${m}</span>`;
+        if (m === 'null') return `<span class="jn">${m}</span>`;
+        return `<span class="ji">${m}</span>`;
+      }
+    );
+}
+
+// ─── Markdown → HTML ────────────────────────────────────────────────────────
+function md2html(text) {
+  if (!text) return '';
+  const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const fmt = s => s
+    .replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/`([^`\n]+)`/g, '<code>$1</code>');
+  const lines = text.split('\n');
+  let html = ''; let i = 0;
+  while (i < lines.length) {
+    const trimmed = lines[i].trim();
+    if (!trimmed) { i++; continue; }
+    // List block
+    if (/^[-*]\s/.test(trimmed)) {
+      html += '<ul>';
+      while (i < lines.length && /^[-*]\s/.test(lines[i].trim())) {
+        const item = lines[i].trim().replace(/^[-*]\s+/, '');
+        html += `<li>${fmt(esc(item))}</li>`;
+        i++;
+      }
+      html += '</ul>';
+      continue;
+    }
+    // Bold standalone heading
+    if (/^\*\*[^*\n]+\*\*$/.test(trimmed)) {
+      html += `<p class="md-h">${fmt(esc(trimmed))}</p>`;
+      i++; continue;
+    }
+    // Paragraph — join until blank or list
+    let para = trimmed; i++;
+    while (i < lines.length) {
+      const next = lines[i].trim();
+      if (!next || /^[-*]\s/.test(next) || /^\*\*[^*\n]+\*\*$/.test(next)) break;
+      para += ' ' + next; i++;
+    }
+    html += `<p>${fmt(esc(para))}</p>`;
+  }
+  return html;
+}
+
+// ─── Relative time ──────────────────────────────────────────────────────────
+function relTime(ts) {
+  const d = Date.now() - new Date(ts).getTime();
+  const m = Math.floor(d / 60000);
+  if (m < 1) return 'just now';
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+}
+
+// ─── CopyBtn ────────────────────────────────────────────────────────────────
+function CopyBtn({ getText, label = '' }) {
+  const [copied, setCopied] = useState(false);
+  const handle = useCallback(() => {
+    const text = typeof getText === 'function' ? getText() : getText;
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }).catch(() => {});
+  }, [getText]);
+  return (
+    <button className={`btn-icon${copied ? ' is-copied' : ''}`} onClick={handle} title="Copy to clipboard">
+      {copied ? <CheckIco size={14} /> : <CopyIco size={14} />}
+      {label && <span>{copied ? 'Copied!' : label}</span>}
+    </button>
+  );
+}
+
+// ─── Skeleton ───────────────────────────────────────────────────────────────
+function Skel({ w = '100%', h = 13, r = 4 }) {
+  return <span className="skel" style={{ width: w, height: h, borderRadius: r }} />;
+}
+
+function CardSkel({ delay = 0 }) {
+  return (
+    <div className="card task-card" style={{ opacity: 0.8 }}>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 14, alignItems: 'flex-start' }}>
+        <Skel w={26} h={20} r={4} />
+        <Skel w="55%" h={18} r={4} />
+      </div>
+      {[100,88,100,78,94,82,65].map((w, i) => (
+        <Skel key={i} w={`${w}%`} h={12} r={3} />
+      ))}
+      <div style={{ marginTop: 10 }}>
+        {[90,100,72].map((w, i) => (
+          <Skel key={i} w={`${w}%`} h={12} r={3} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ─── Icons ──────────────────────────────────────────────────────────────────
+const svgBase = (size, children) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+    {children}
+  </svg>
+);
+
+const SunIco = ({ size = 18 }) => svgBase(size, [
+  <circle key="c" cx="12" cy="12" r="5" />,
+  <line key="l1" x1="12" y1="1" x2="12" y2="3" />, <line key="l2" x1="12" y1="21" x2="12" y2="23" />,
+  <line key="l3" x1="4.22" y1="4.22" x2="5.64" y2="5.64" />, <line key="l4" x1="18.36" y1="18.36" x2="19.78" y2="19.78" />,
+  <line key="l5" x1="1" y1="12" x2="3" y2="12" />, <line key="l6" x1="21" y1="12" x2="23" y2="12" />,
+  <line key="l7" x1="4.22" y1="19.78" x2="5.64" y2="18.36" />, <line key="l8" x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
+]);
+
+const MoonIco = ({ size = 18 }) => svgBase(size, <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />);
+
+const SendIco = ({ size = 18 }) => svgBase(size, [
+  <line key="l" x1="22" y1="2" x2="11" y2="13" />,
+  <polygon key="p" points="22 2 15 22 11 13 2 9 22 2" fill="currentColor" stroke="none" />
+]);
+
+const CopyIco = ({ size = 16 }) => svgBase(size, [
+  <rect key="r" x="9" y="9" width="13" height="13" rx="2" ry="2" />,
+  <path key="p" d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+]);
+
+const CheckIco = ({ size = 16 }) => svgBase(size, <polyline points="20 6 9 17 4 12" strokeWidth="2.5" />);
+
+const GearIco = ({ size = 18 }) => svgBase(size, [
+  <circle key="c" cx="12" cy="12" r="3" />,
+  <path key="p" d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+]);
+
+const HistoryIco = ({ size = 16 }) => svgBase(size, [
+  <polyline key="a" points="1 4 1 10 7 10" />,
+  <path key="b" d="M3.51 15a9 9 0 1 0 .49-4.5" />
+]);
+
+const XIco = ({ size = 16 }) => svgBase(size, [
+  <line key="a" x1="18" y1="6" x2="6" y2="18" />,
+  <line key="b" x1="6" y1="6" x2="18" y2="18" />
+]);
+
+const ChevDownIco = ({ size = 14 }) => svgBase(size, <polyline points="6 9 12 15 18 9" />);
+const ChevUpIco = ({ size = 14 }) => svgBase(size, <polyline points="18 15 12 9 6 15" />);
+
+const CodeIco = ({ size = 14 }) => svgBase(size, [
+  <polyline key="a" points="16 18 22 12 16 6" />,
+  <polyline key="b" points="8 6 2 12 8 18" />
+]);
+
+const TextIco = ({ size = 14 }) => svgBase(size, [
+  <polyline key="a" points="4 7 4 4 20 4 20 7" />,
+  <line key="b" x1="9" y1="20" x2="15" y2="20" />,
+  <line key="c" x1="12" y1="4" x2="12" y2="20" />
+]);
+
+const LoaderIco = ({ size = 16 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="spin" style={{ flexShrink: 0 }}>
+    <line x1="12" y1="2" x2="12" y2="6" /><line x1="12" y1="18" x2="12" y2="22" />
+    <line x1="4.93" y1="4.93" x2="7.76" y2="7.76" /><line x1="16.24" y1="16.24" x2="19.07" y2="19.07" />
+    <line x1="2" y1="12" x2="6" y2="12" /><line x1="18" y1="12" x2="22" y2="12" />
+    <line x1="4.93" y1="19.07" x2="7.76" y2="16.24" /><line x1="16.24" y1="7.76" x2="19.07" y2="4.93" />
+  </svg>
+);
+
+// ─── Mock data ──────────────────────────────────────────────────────────────
+const MOCK_PR = {
+  prompt_id: "prompt-242e01e0cfaf4799a80ac6125dae6160",
+  answer: "Plan status is executing. Known task results are available for: T1, T2, T3, T4.",
+  referenced_task_ids: ["T1", "T2", "T3", "T4"],
+  referenced_artifact_ids: []
+};
+
+const MOCK_TASKS = {
+  T1: { task_id: "T1", output: { section: "Discovery & Planning Phase", content: "The runtime ingests a raw objective and passes it through a parsing and normalization layer to extract explicit constraints, success criteria, and required capabilities. The planner then decomposes the normalized objective into discrete, atomic subtasks grouped into execution waves. Each subtask is assigned specific skills and tool dependencies. A directed acyclic graph (DAG) is generated to map inter-task dependencies, establishing a strict execution topology. Finally, the system performs a capability gap analysis and risk assessment, attaching fallback strategies to identified risks. The result is a structured execution plan containing the dependency graph, capability map, and risk register, ready for background dispatch." }, artifacts: [], status: null },
+  T2: { task_id: "T2", output: { section: "Execution Planning", content: "Once the discovery phase yields a normalized objective, the runtime transitions to execution planning, focusing on task scheduling, dependency resolution, and resource allocation.\n\n**Task Scheduling**\nThe planner decomposes the objective into atomic subtasks organized into sequential execution waves. Tasks are dispatched asynchronously via an `async_dispatch` mechanism, allowing background execution without blocking the main thread. Each task is configured with a strict invocation schema, including timeout limits and exponential backoff retry policies.\n\n**Dependency Resolution**\nTo enforce logical execution order, the planner constructs a Directed Acyclic Graph (DAG) mapping inter-task dependencies. This topology establishes strict blocking relationships; downstream tasks remain queued until upstream dependencies complete and pass quality gates.\n\n**Resource Allocation**\nThe runtime dynamically allocates computational and contextual resources based on a capability map. Contextual resources are strictly managed via a token budget system, reserving a portion of the context window for responses." }, artifacts: [], status: null },
+  T3: { task_id: "T3", output: { section: "Async Execution & Progress Streaming", content: "Once tasks are scheduled, the runtime transitions to background execution. Tasks are dispatched asynchronously via an `async_dispatch` mechanism, ensuring long-running operations do not block the main control loop. Each worker operates independently, processing its assigned subtask while adhering to configured timeouts and retry policies.\n\nTo maintain visibility, the runtime leverages a `progress_signal_bus` for real-time event streaming. As a worker executes, it emits structured signals:\n- **Heartbeats:** Periodic signals confirming the worker is active and healthy.\n- **Progress Updates:** Status transitions (e.g., `dispatched`, `worker_started`, `worker_completed`) and completion percentages.\n- **Findings:** Intermediate outputs or early results generated during execution.\n\nThis decoupled architecture ensures the execution engine remains responsive while external monitors can subscribe to track state changes." }, artifacts: [], status: null },
+  T4: { task_id: "T4", output: { section: "User Prompt Handling", content: "While tasks execute in the background, the runtime maintains interactivity through a `prompt_queue` that intercepts and buffers all incoming user inputs. The queue applies a priority-based scheduling algorithm, classifying prompts into categories such as `control`, `status_check`, or `content_reasoning`. High-priority commands bypass the buffer and are immediately dispatched to the `runtime_command_executor`, whereas lower-priority queries are processed sequentially during idle cycles. This architecture prevents input-induced deadlocks and allows users to dynamically steer the runtime without disrupting background execution." }, artifacts: [], status: null }
+};
+
+// ─── Default config ─────────────────────────────────────────────────────────
+const DEFAULT_CONFIG = {
+  apiBase: 'http://localhost:8000',
+  promptPath: '/prompt',
+  taskPath: '/tasks/:id',
+  promptBodyKey: 'prompt',
+  authToken: '',
+  mockMode: true
+};
+
+// ─── agent-ui/task-card.jsx ─────────────────────────────────────────────
+
+function TaskCard({ task, viewMode, animDelay = 0 }) {
+  const [localView, setLocalView] = useState(null);
+  const active = localView || viewMode;
+
+  const getContent = useCallback(() => {
+    if (active === 'json') return JSON.stringify(task, null, 2);
+    return `${task.task_id}: ${task.output?.section}\n\n${task.output?.content}`;
+  }, [task, active]);
+
+  return (
+    <div
+      className="card task-card task-card-animate"
+      style={{ animationDelay: `${animDelay}ms` }}
+    >
+      <div className="task-card-header">
+        <div className="task-card-left">
+          <span className="task-id-chip">{task.task_id}</span>
+          <span className="task-section">{task.output?.section}</span>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+          {/* Per-card view override */}
+          <div className="seg" style={{ transform: 'scale(0.9)', transformOrigin: 'right center' }}>
+            <button
+              className={`seg-btn${(!localView && active === 'readable') || localView === 'readable' ? ' active' : ''}`}
+              onClick={() => setLocalView('readable')}
+              title="Readable"
+            >
+              <TextIco size={12} />
+            </button>
+            <button
+              className={`seg-btn${(!localView && active === 'json') || localView === 'json' ? ' active' : ''}`}
+              onClick={() => setLocalView('json')}
+              title="JSON"
+            >
+              <CodeIco size={12} />
+            </button>
+          </div>
+          <CopyBtn getText={getContent} />
+        </div>
+      </div>
+
+      <div className="task-content">
+        {active === 'json' ? (
+          <div
+            className="json-view"
+            dangerouslySetInnerHTML={{ __html: hlJSON(task) }}
+          />
+        ) : (
+          <div
+            className="readable"
+            dangerouslySetInnerHTML={{ __html: md2html(task.output?.content || '') }}
+          />
+        )}
+      </div>
+
+      {(task.artifacts?.length > 0 || task.status) && (
+        <div style={{ marginTop: 12, paddingTop: 10, borderTop: '1px solid var(--border)', display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          {task.status && (
+            <span className="chip green">{task.status}</span>
+          )}
+          {task.artifacts?.map((a, i) => (
+            <span key={i} className="chip">{typeof a === 'string' ? a : JSON.stringify(a)}</span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── agent-ui/output-area.jsx ─────────────────────────────────────────────
+
+function SummaryCard({ promptResponse, shouldStream, streamKey }) {
+  const { shown, done } = useStreamText(promptResponse?.answer, shouldStream, streamKey);
+  const displayText = shouldStream ? shown : (promptResponse?.answer || '');
+
+  const getCopyText = useCallback(() => {
+    if (!promptResponse) return '';
+    const tasks = (promptResponse.referenced_task_ids || []).join(', ');
+    return `Prompt ID: ${promptResponse.prompt_id}\n\nAnswer: ${promptResponse.answer}\n\nReferenced tasks: ${tasks}`;
+  }, [promptResponse]);
+
+  return (
+    <div className="card summary-card">
+      <div className="summary-header">
+        <span className="summary-id">
+          {promptResponse?.prompt_id || '—'}
+        </span>
+        <CopyBtn getText={getCopyText} label="Copy" />
+      </div>
+
+      {promptResponse ? (
+        <p className={`summary-answer${shouldStream && !done ? ' cursor-blink' : ''}`}>
+          {displayText}
+        </p>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
+          <Skel w="95%" h={15} r={4} />
+          <Skel w="78%" h={15} r={4} />
+        </div>
+      )}
+
+      {promptResponse?.referenced_task_ids?.length > 0 && (done || !shouldStream) && (
+        <div className="ref-ids">
+          <span className="ref-label">Tasks:</span>
+          {promptResponse.referenced_task_ids.map(id => (
+            <span key={id} className="chip">{id}</span>
+          ))}
+          {promptResponse.referenced_artifact_ids?.length > 0 && (
+            <>
+              <span className="ref-label" style={{ marginLeft: 4 }}>Artifacts:</span>
+              {promptResponse.referenced_artifact_ids.map(id => (
+                <span key={id} className="chip green">{id}</span>
+              ))}
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function OutputArea({ result, isLoading, shouldStream, streamKey, viewMode, setViewMode }) {
+  const promptResponse = result?.promptResponse;
+  const tasks = result?.tasks || [];
+  const expectedCount = promptResponse?.referenced_task_ids?.length || 0;
+  const skeletonCount = Math.max(0, expectedCount - tasks.length);
+
+  const getAllCopyText = useCallback(() => {
+    if (!result) return '';
+    if (viewMode === 'json') {
+      return JSON.stringify(result, null, 2);
+    }
+    const lines = [
+      `Prompt ID: ${result.promptResponse?.prompt_id}`,
+      `Answer: ${result.promptResponse?.answer}`,
+      '',
+      ...tasks.map(t =>
+        `── ${t.task_id}: ${t.output?.section} ──\n${t.output?.content}`
+      )
+    ];
+    return lines.join('\n\n');
+  }, [result, viewMode, tasks]);
+
+  if (!result && !isLoading) return null;
+
+  return (
+    <div className="output-section">
+      <div className="section-divider">
+        <span className="section-divider-label">Output</span>
+      </div>
+
+      {/* Summary answer */}
+      <SummaryCard
+        promptResponse={promptResponse}
+        shouldStream={shouldStream}
+        streamKey={streamKey}
+      />
+
+      {/* Tasks */}
+      {(tasks.length > 0 || skeletonCount > 0 || isLoading) && (
+        <div style={{ marginTop: 24 }}>
+          <div className="tasks-header">
+            <span className="tasks-title">
+              {isLoading && tasks.length === 0
+                ? 'Loading tasks…'
+                : `Tasks${tasks.length > 0 ? ` (${tasks.length}${skeletonCount > 0 ? `/${expectedCount}` : ''})` : ''}`
+              }
+              {(isLoading || skeletonCount > 0) && tasks.length > 0 && (
+                <span style={{ marginLeft: 8, color: 'var(--faint)', fontWeight: 400 }}>
+                  — {skeletonCount} pending
+                </span>
+              )}
+            </span>
+            <div className="tasks-actions">
+              <div className="seg">
+                <button
+                  className={`seg-btn${viewMode === 'readable' ? ' active' : ''}`}
+                  onClick={() => setViewMode('readable')}
+                >
+                  <TextIco size={12} /> Readable
+                </button>
+                <button
+                  className={`seg-btn${viewMode === 'json' ? ' active' : ''}`}
+                  onClick={() => setViewMode('json')}
+                >
+                  <CodeIco size={12} /> JSON
+                </button>
+              </div>
+              {tasks.length > 0 && (
+                <CopyBtn getText={getAllCopyText} label="Copy all" />
+              )}
+            </div>
+          </div>
+
+          <div className="task-grid">
+            {tasks.map((task, i) => (
+              <TaskCard
+                key={task.task_id}
+                task={task}
+                viewMode={viewMode}
+                animDelay={i * 60}
+              />
+            ))}
+            {Array.from({ length: isLoading && tasks.length === 0 ? 4 : skeletonCount }).map((_, i) => (
+              <CardSkel key={`skel-${i}`} />
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── agent-ui/prompt-area.jsx ─────────────────────────────────────────────
+
+function HistoryPanel({ history, onSelect, onClear }) {
+  if (!history.length) return null;
+  return (
+    <div className="history-list">
+      {history.map(item => (
+        <button
+          key={item.id}
+          className="history-item"
+          onClick={() => onSelect(item)}
+          title={item.prompt}
+        >
+          <span className="history-dot" />
+          <span className="history-text">{item.prompt}</span>
+          <span className="history-meta">
+            {item.result?.tasks?.length
+              ? `${item.result.tasks.length} task${item.result.tasks.length !== 1 ? 's' : ''} · `
+              : ''}
+            {relTime(item.timestamp)}
+          </span>
+        </button>
+      ))}
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 2 }}>
+        <button className="history-clear" onClick={onClear}>Clear history</button>
+      </div>
+    </div>
+  );
+}
+
+function PromptArea({ onSubmit, isLoading, history, onLoadHistory }) {
+  const [text, setText] = useState('');
+  const [histOpen, setHistOpen] = useState(false);
+  const textareaRef = useRef(null);
+
+  const handleSubmit = useCallback(() => {
+    if (!text.trim() || isLoading) return;
+    onSubmit(text.trim());
+  }, [text, isLoading, onSubmit]);
+
+  const handleKeyDown = useCallback((e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+      e.preventDefault();
+      handleSubmit();
+    }
+  }, [handleSubmit]);
+
+  const handleLoadHistory = useCallback((item) => {
+    setText(item.prompt);
+    setHistOpen(false);
+    onLoadHistory(item);
+    setTimeout(() => textareaRef.current?.focus(), 50);
+  }, [onLoadHistory]);
+
+  return (
+    <div>
+      {/* Prompt input card */}
+      <div className="card prompt-card">
+        <div className="prompt-label">Prompt</div>
+        <textarea
+          ref={textareaRef}
+          className="prompt-textarea"
+          placeholder="Describe a task for the agent runtime…"
+          value={text}
+          onChange={e => setText(e.target.value)}
+          onKeyDown={handleKeyDown}
+          disabled={isLoading}
+          autoFocus
+        />
+        <div className="prompt-footer">
+          <span className="char-count">
+            {text.length > 0 ? `${text.length} chars` : '⌘↵ to run'}
+          </span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            {history.length > 0 && (
+              <button
+                className="btn btn-ghost"
+                onClick={() => setHistOpen(o => !o)}
+                style={{ padding: '6px 10px', fontSize: 13 }}
+              >
+                <HistoryIco size={14} />
+                {histOpen ? 'Hide history' : `History (${history.length})`}
+                {histOpen ? <ChevUpIco size={13} /> : <ChevDownIco size={13} />}
+              </button>
+            )}
+            <button
+              className="btn btn-primary"
+              onClick={handleSubmit}
+              disabled={!text.trim() || isLoading}
+              style={{ minWidth: 110 }}
+            >
+              {isLoading ? (
+                <><LoaderIco size={14} /> Running…</>
+              ) : (
+                <><SendIco size={14} /> Run</>
+              )}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* History panel */}
+      {histOpen && history.length > 0 && (
+        <div className="history-wrap">
+          <HistoryPanel
+            history={history}
+            onSelect={handleLoadHistory}
+            onClear={() => {
+              onLoadHistory(null);
+              setHistOpen(false);
+            }}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── agent-ui/settings-panel.jsx ─────────────────────────────────────────────
+
+function Field({ label, hint, children }) {
+  return (
+    <div className="field">
+      <label>{label}</label>
+      {children}
+      {hint && <span className="field-hint">{hint}</span>}
+    </div>
+  );
+}
+
+function SettingsPanel({ config, setConfig, open, onClose }) {
+  const [local, setLocal] = useState(config);
+
+  const update = useCallback((key, val) => {
+    setLocal(prev => ({ ...prev, [key]: val }));
+  }, []);
+
+  const save = useCallback(() => {
+    setConfig(local);
+    localStorage.setItem('agui_config', JSON.stringify(local));
+    onClose();
+  }, [local, setConfig, onClose]);
+
+  // Sync local when panel opens
+  useState(() => { if (open) setLocal(config); });
+
+  return (
+    <>
+      <div className={`overlay${open ? ' open' : ''}`} onClick={onClose} />
+      <div className={`settings-panel${open ? ' open' : ''}`}>
+        <div className="settings-head">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <GearIco size={16} />
+            <span className="settings-title">Settings</span>
+          </div>
+          <button className="btn-icon" onClick={onClose} style={{ padding: '4px 8px' }}>
+            <XIco size={15} />
+          </button>
+        </div>
+
+        <div className="settings-body">
+          {/* Mock mode toggle */}
+          <div className="mock-row">
+            <div>
+              <div className="mock-label">Mock mode</div>
+              <div className="mock-desc">Use sample data instead of a real API</div>
+            </div>
+            <button
+              className={`switch-btn${local.mockMode ? ' on' : ''}`}
+              onClick={() => update('mockMode', !local.mockMode)}
+              aria-label="Toggle mock mode"
+            />
+          </div>
+
+          <div className="field-sep" />
+
+          {/* API config — dimmed when mock is on */}
+          <div style={{ opacity: local.mockMode ? 0.45 : 1, transition: 'opacity 0.2s', pointerEvents: local.mockMode ? 'none' : 'auto' }}>
+            <Field label="API Base URL" hint="e.g. https://api.example.com">
+              <input
+                type="text"
+                value={local.apiBase}
+                onChange={e => update('apiBase', e.target.value)}
+                placeholder="http://localhost:8000"
+                spellCheck="false"
+              />
+            </Field>
+
+            <div style={{ marginTop: 14 }}>
+              <Field label="Prompt path" hint="POST endpoint to submit a prompt">
+                <input
+                  type="text"
+                  value={local.promptPath}
+                  onChange={e => update('promptPath', e.target.value)}
+                  placeholder="/prompt"
+                  spellCheck="false"
+                />
+              </Field>
+            </div>
+
+            <div style={{ marginTop: 14 }}>
+              <Field label="Task path" hint="GET endpoint — use :id as the task ID placeholder">
+                <input
+                  type="text"
+                  value={local.taskPath}
+                  onChange={e => update('taskPath', e.target.value)}
+                  placeholder="/tasks/:id"
+                  spellCheck="false"
+                />
+              </Field>
+            </div>
+
+            <div style={{ marginTop: 14 }}>
+              <Field label="Prompt body key" hint='JSON key for the prompt text (e.g. "prompt")'>
+                <input
+                  type="text"
+                  value={local.promptBodyKey}
+                  onChange={e => update('promptBodyKey', e.target.value)}
+                  placeholder="prompt"
+                  spellCheck="false"
+                />
+              </Field>
+            </div>
+
+            <div style={{ marginTop: 14 }}>
+              <Field label="Auth token" hint="Added as Bearer token in Authorization header">
+                <input
+                  type="password"
+                  value={local.authToken}
+                  onChange={e => update('authToken', e.target.value)}
+                  placeholder="Optional"
+                  spellCheck="false"
+                />
+              </Field>
+            </div>
+          </div>
+
+          <button className="btn btn-primary" onClick={save} style={{ marginTop: 8 }}>
+            Save settings
+          </button>
+        </div>
+      </div>
+    </>
+  );
+}
+
+// ─── agent-ui/app.jsx ─────────────────────────────────────────────
+
+// ─── API helpers ─────────────────────────────────────────────────────────────
+async function fetchPrompt(promptText, config) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (config.authToken) headers['Authorization'] = `Bearer ${config.authToken}`;
+  const body = { [config.promptBodyKey || 'prompt']: promptText };
+  const res = await fetch(`${config.apiBase}${config.promptPath || '/prompt'}`, {
+    method: 'POST', headers, body: JSON.stringify(body)
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+  return res.json();
+}
+
+async function fetchTask(id, config) {
+  const headers = {};
+  if (config.authToken) headers['Authorization'] = `Bearer ${config.authToken}`;
+  const path = (config.taskPath || '/tasks/:id').replace(':id', encodeURIComponent(id));
+  const res = await fetch(`${config.apiBase}${path}`, { headers });
+  if (!res.ok) return null;
+  return res.json();
+}
+
+// ─── Theme toggle button ─────────────────────────────────────────────────────
+function ThemeToggle() {
+  const { theme, toggle } = useTheme();
+  return (
+    <button className="btn-icon" onClick={toggle} title="Toggle theme" style={{ padding: '6px 9px' }}>
+      {theme === 'light' ? <MoonIco size={16} /> : <SunIco size={16} />}
+    </button>
+  );
+}
+
+// ─── Inner app (needs theme context) ────────────────────────────────────────
+function InnerApp() {
+  const [config, setConfig] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('agui_config')) || DEFAULT_CONFIG; }
+    catch { return DEFAULT_CONFIG; }
+  });
+
+  const [history, setHistory] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('agui_history')) || []; }
+    catch { return []; }
+  });
+
+  const [currentResult, setCurrentResult] = useState(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [shouldStream, setShouldStream] = useState(false);
+  const [streamKey, setStreamKey] = useState(0);
+  const [viewMode, setViewMode] = useState('readable');
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [error, setError] = useState(null);
+
+  const saveHistory = useCallback((items) => {
+    setHistory(items);
+    localStorage.setItem('agui_history', JSON.stringify(items));
+  }, []);
+
+  const handleSubmit = useCallback(async (promptText) => {
+    if (isLoading) return;
+    setIsLoading(true);
+    setCurrentResult(null);
+    setShouldStream(false);
+    setError(null);
+
+    try {
+      if (config.mockMode) {
+        // ── Mock: simulate progressive loading ──
+        await new Promise(r => setTimeout(r, 750));
+        const pr = { ...MOCK_PR };
+        setCurrentResult({ promptResponse: pr, tasks: [] });
+        setShouldStream(true);
+        setStreamKey(k => k + 1);
+        setIsLoading(false);
+
+        const finalTasks = [];
+        for (const id of pr.referenced_task_ids) {
+          await new Promise(r => setTimeout(r, 380));
+          const task = MOCK_TASKS[id];
+          if (task) {
+            finalTasks.push(task);
+            setCurrentResult(prev => ({ ...prev, tasks: [...(prev?.tasks || []), task] }));
+          }
+        }
+
+        const item = { id: String(Date.now()), timestamp: new Date().toISOString(), prompt: promptText, result: { promptResponse: pr, tasks: finalTasks } };
+        saveHistory([item, ...history].slice(0, 10));
+
+      } else {
+        // ── Real API ──
+        const promptResponse = await fetchPrompt(promptText, config);
+        setCurrentResult({ promptResponse, tasks: [] });
+        setShouldStream(true);
+        setStreamKey(k => k + 1);
+        setIsLoading(false);
+
+        const taskIds = promptResponse.referenced_task_ids || [];
+        const finalTasks = [];
+
+        await Promise.allSettled(
+          taskIds.map(id =>
+            fetchTask(id, config).then(task => {
+              if (task) {
+                finalTasks.push(task);
+                setCurrentResult(prev => ({ ...prev, tasks: [...(prev?.tasks || []), task] }));
+              }
+            })
+          )
+        );
+
+        const item = { id: String(Date.now()), timestamp: new Date().toISOString(), prompt: promptText, result: { promptResponse, tasks: finalTasks } };
+        saveHistory([item, ...history].slice(0, 10));
+      }
+    } catch (err) {
+      setIsLoading(false);
+      setError(err.message || 'Request failed');
+    }
+  }, [isLoading, config, history, saveHistory]);
+
+  const handleLoadHistory = useCallback((item) => {
+    if (!item) { saveHistory([]); setCurrentResult(null); return; }
+    setCurrentResult(item.result);
+    setShouldStream(false);
+    setStreamKey(k => k + 1);
+    setError(null);
+  }, [saveHistory]);
+
+  return (
+    <div className="app">
+      {/* Topbar */}
+      <header className="topbar">
+        <div className="topbar-brand">
+          <span className="topbar-dot" />
+          <span className="topbar-title">Agent Runner</span>
+          {config.mockMode && <span className="badge-mock">MOCK</span>}
+        </div>
+        <div className="topbar-actions">
+          <ThemeToggle />
+          <button
+            className={`btn-icon${settingsOpen ? ' is-copied' : ''}`}
+            onClick={() => setSettingsOpen(true)}
+            title="Settings"
+            style={{ padding: '6px 9px' }}
+          >
+            <GearIco size={16} />
+          </button>
+        </div>
+      </header>
+
+      {/* Main */}
+      <main className="main">
+        <PromptArea
+          onSubmit={handleSubmit}
+          isLoading={isLoading}
+          history={history}
+          onLoadHistory={handleLoadHistory}
+        />
+
+        {error && (
+          <div className="card error-card" style={{ marginTop: 16 }}>
+            <p className="error-text">⚠ {error}</p>
+          </div>
+        )}
+
+        <OutputArea
+          result={currentResult}
+          isLoading={isLoading}
+          shouldStream={shouldStream}
+          streamKey={streamKey}
+          viewMode={viewMode}
+          setViewMode={setViewMode}
+        />
+      </main>
+
+      <SettingsPanel
+        config={config}
+        setConfig={setConfig}
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+      />
+    </div>
+  );
+}
+
+// ─── Root ────────────────────────────────────────────────────────────────────
+function App() {
+  return (
+    <ThemeProvider>
+      <InnerApp />
+    </ThemeProvider>
+  );
+}
+
+
+// ─── Mount ────────────────────────────────────────────────────────────────────
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(<App />);
+</script>
+</body>
+</html>
